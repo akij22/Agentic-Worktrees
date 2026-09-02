@@ -22,6 +22,7 @@
     "db:migrate": "drizzle-kit migrate",
     "rebuild": "electron-rebuild -f -w better-sqlite3 -w node-pty",
     "build:capability-host": "vite build --config vite.capability-host.config.ts",
+    "build:capability-packages": "npm run build --workspace @agentic-worktrees/capability-sdk && npm run build --if-present --workspaces --include-workspace-root=false",
     "smoke:capabilities": "node scripts/capability-smoke/run.mjs",
     "capability:create": "tsx scripts/capability-kit/cli.ts",
     "smoke:capabilities:web-search": "node scripts/capability-smoke/run.mjs --scenario web-search",

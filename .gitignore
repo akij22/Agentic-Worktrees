@@ -85,8 +85,10 @@ typings/
 # Webpack
 .webpack/
 
-# Vite
+# Vite and publishable workspace builds
 .vite/
+packages/*/dist/
+capabilities/*/dist/
 
 # Electron-Forge
 out/

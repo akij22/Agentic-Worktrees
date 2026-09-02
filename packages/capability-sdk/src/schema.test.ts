@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defineCapability, defineTool, validateCapabilityDefinition } from "./index";
+import { CapabilityError, defineCapability, defineTool, staticDescriptorFromDefinition, validateCapabilityDefinition, validateCapabilityStaticDescriptor } from "./index";
 
 const manifest = {
   id: "example.echo",
@@ -33,6 +33,27 @@ describe("capability schema", () => {
       expect(() => validateCapabilityDefinition(defineCapability({ manifest: { ...manifest, permissions: { network: [permission], secrets: [] } }, tools: [] }))).toThrow("network permission");
     }
     expect(() => validateCapabilityDefinition(defineCapability({ manifest: { ...manifest, permissions: { network: ["example.com", "example.com"], secrets: [] } }, tools: [] }))).toThrow("network permission");
+  });
+
+  it("validates and freezes unknown static descriptors", () => {
+    const descriptor = {
+      manifest,
+      tools: [{ name: "echo_text", description: "Echo", inputSchema: { type: "object", properties: {}, additionalProperties: false } }],
+    };
+    const validated = validateCapabilityStaticDescriptor(descriptor);
+    expect(validated).toMatchObject({ manifest: { id: "example.echo" }, tools: [{ name: "echo_text" }] });
+    expect(Object.isFrozen(validated)).toBe(true);
+    expect(Object.isFrozen(validated.tools[0]?.inputSchema)).toBe(true);
+    expect(() => validateCapabilityStaticDescriptor({ manifest: null, tools: [] })).toThrow(CapabilityError);
+    expect(() => validateCapabilityStaticDescriptor({ ...descriptor, extra: true })).toThrow("Unknown descriptor");
+    expect(() => validateCapabilityStaticDescriptor({ ...descriptor, tools: [{ ...descriptor.tools[0], name: "Bad Tool" }] })).toThrow("Invalid tool name");
+    expect(() => validateCapabilityStaticDescriptor({ ...descriptor, tools: [descriptor.tools[0], descriptor.tools[0]] })).toThrow("Duplicate tool");
+    expect(() => validateCapabilityStaticDescriptor({ ...descriptor, tools: Array.from({ length: 101 }, (_, index) => ({ ...descriptor.tools[0], name: `tool_${index}` })) })).toThrow("Invalid capability tools");
+  });
+
+  it("projects executable definitions through the static validator", () => {
+    const definition = defineCapability({ manifest, tools: [defineTool({ name: "echo_text", description: "Echo", inputSchema: { type: "object" }, execute: async () => ({ content: [] }) })] });
+    expect(staticDescriptorFromDefinition(definition)).toEqual({ manifest, tools: [{ name: "echo_text", description: "Echo", inputSchema: { type: "object" } }] });
   });
 
   it("rejects duplicate names, invalid schemas, compatibility, and undeclared secrets", () => {
