@@ -25,6 +25,7 @@
     "build:capability-packages": "npm run build --workspace @agentic-worktrees/capability-sdk && npm run build --if-present --workspaces --include-workspace-root=false",
     "smoke:capabilities": "node scripts/capability-smoke/run.mjs",
     "capability:create": "tsx scripts/capability-kit/cli.ts",
+    "catalog:sign": "tsx scripts/catalog/sign-official-catalog.ts",
     "smoke:capabilities:web-search": "node scripts/capability-smoke/run.mjs --scenario web-search",
     "smoke:capabilities:url-fetch": "node scripts/capability-smoke/run.mjs --scenario url-fetch",
     "smoke:skills": "node scripts/skill-smoke/run.mjs",
