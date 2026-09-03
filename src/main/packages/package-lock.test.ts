@@ -41,11 +41,13 @@ describe("PackageLock", () => {
 		gate.resolve(); await expect(first).rejects.toThrow("package lock"); await second; expect(order).toEqual(["first-enter", "first-exit", "second-enter"]); expect(release).toHaveBeenCalledTimes(2);
 	});
 	it("keeps a real long-lived owner through heartbeat renewal", async () => {
-		const path = join(await mkdtemp(join(tmpdir(), "lock-")), "global"); const held = deferred();
+		const path = join(await mkdtemp(join(tmpdir(), "lock-")), "global"); const held = deferred(); const release = deferred();
 		const owner = new PackageLock(path, { staleMs: 2_000, updateMs: 1_000, retryMs: 10, timeoutMs: 5_000 });
-		const ownerRun = owner.runExclusive(async () => { held.resolve(); await new Promise(resolve => setTimeout(resolve, 2_500)); }); await held.promise;
-		const contender = new PackageLock(path, { staleMs: 2_000, updateMs: 1_000, retryMs: 10, timeoutMs: 250 });
-		await expect(contender.runExclusive(async () => "stolen")).rejects.toThrow("package lock"); await ownerRun;
+		const ownerRun = owner.runExclusive(async () => { held.resolve(); await release.promise; }); await held.promise;
+		await new Promise(resolve => setTimeout(resolve, 2_100));
+		const contender = new PackageLock(path, { staleMs: 2_000, updateMs: 1_000, retryMs: 10, timeoutMs: 300 });
+		await expect(contender.runExclusive(async () => "stolen")).rejects.toThrow("package lock");
+		release.resolve(); await ownerRun;
 		await expect(contender.runExclusive(async () => "acquired")).resolves.toBe("acquired");
-	}, 7_000);
+	}, 8_000);
 });
