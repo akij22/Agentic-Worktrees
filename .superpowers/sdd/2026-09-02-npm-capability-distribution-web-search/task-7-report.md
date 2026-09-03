@@ -19,6 +19,12 @@ Result: **4 files passed, 10 tests passed**.
 
 `npm run typecheck` remains blocked by the unrelated existing renderer diagnostic at `src/renderer/features/coding-agent/views/CodingAgentSession.tsx:387` (`skillInvocations` is not declared on the component props).
 
+## Task 7A3 — installed catalog validation and immutable snapshots
+
+Implemented strict, path-free catalog validation with bounded static reads, canonical managed-layout checks, exact pointer identity, descriptor/permission/content digest verification, recursive immutable snapshots, and serialized refresh ordering. Invalid/non-installed records are omitted; failed refreshes preserve the previous snapshot.
+
+Direct catalog tests currently present: 1 (initial immutable snapshot). Full temporary-layout Task 7A3 coverage remains pending in the checkout.
+
 ## Status
 **BLOCKED**: the complete brief still requires additional real temporary-fixture tests and implementation for atomic rollback, pointer/catalog failure compensation, startup interruption reconciliation, full Official/Community DTO projections, and complete lock lifetime across consent. These are not honestly claimable as covered in this checkout.
 
