@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 
-export interface PackageTreeLimits { maxBytes?: number; maxEntries?: number }
+export interface PackageTreeLimits { maxBytes?: number; maxEntries?: number; afterFileRead?: (path: string) => Promise<void> }
 export function normalizePackagePath(path: string): string { return path.replace(/\\/g, "/"); }
 const comparePaths = (left: { path: string }, right: { path: string }) => Buffer.compare(Buffer.from(left.path), Buffer.from(right.path));
 export async function digestPackageTree(rootPath: string, limits: PackageTreeLimits = {}): Promise<string> {
@@ -25,6 +25,9 @@ export async function digestPackageTree(rootPath: string, limits: PackageTreeLim
 					bytes += opened.size; if (bytes > maxBytes) throw new Error("Package exceeds maximum size");
 					const content = Buffer.alloc(opened.size); let offset = 0; while (offset < content.length) { const result = await handle.read(content, offset, content.length - offset, offset); if (result.bytesRead === 0) throw new Error("Package entry changed during verification"); offset += result.bytesRead; }
 					const after = await handle.stat(); if (after.size !== opened.size || after.mtimeMs !== opened.mtimeMs || after.ino !== opened.ino) throw new Error("Package entry changed during verification");
+					await limits.afterFileRead?.(path);
+					let pathname; try { pathname = await lstat(path); } catch { throw new Error("Package entry changed during verification"); }
+					if (!pathname.isFile() || pathname.dev !== opened.dev || pathname.ino !== opened.ino) throw new Error("Package entry changed during verification");
 					records.push({ path: rel, mode: opened.mode & 0o777, content });
 				} finally { await handle.close(); }
 			} else throw new Error("Unsupported package entry type");

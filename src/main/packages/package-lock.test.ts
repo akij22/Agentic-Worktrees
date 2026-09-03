@@ -1,48 +1,41 @@
-import { mkdtemp, readFile, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import { PackageLock } from "./package-lock";
+import { describe, expect, it, vi } from "vitest";
+import { PackageLock, type PackageLockAdapter } from "./package-lock";
 
+const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(r => { resolve = r; }); return { promise, resolve }; };
 describe("PackageLock", () => {
-	it("serializes independent contenders", async () => {
-		const path = join(await mkdtemp(join(tmpdir(), "lock-")), "global.lock");
-		const first = new PackageLock(path, { retryMs: 2 }), second = new PackageLock(path, { retryMs: 2 });
-		const order: string[] = [];
-		await Promise.all([first.runExclusive(async () => { order.push("a1"); await new Promise(r => setTimeout(r, 20)); order.push("a2"); }), second.runExclusive(async () => { order.push("b"); })]);
-		expect(order).toEqual(["a1", "a2", "b"]);
+	it("serializes independent real lock instances", async () => {
+		const path = join(await mkdtemp(join(tmpdir(), "lock-")), "global"); const gate = deferred(); const entered = deferred(); const order: string[] = [];
+		const first = new PackageLock(path, { retryMs: 2, timeoutMs: 1_000 }); const second = new PackageLock(path, { retryMs: 2, timeoutMs: 1_000 });
+		const a = first.runExclusive(async () => { order.push("a"); entered.resolve(); await gate.promise; }); await entered.promise;
+		const b = second.runExclusive(async () => { order.push("b"); }); await Promise.resolve(); expect(order).toEqual(["a"]); gate.resolve(); await Promise.all([a, b]); expect(order).toEqual(["a", "b"]);
 	});
-	it("recovers stale dead locks but not recent ones", async () => {
-		const path = join(await mkdtemp(join(tmpdir(), "lock-")), "global.lock");
-		await writeFile(path, JSON.stringify({ pid: 99999999, acquiredAt: Date.now() - 61_000, ownerToken: "stale" }));
-		await expect(new PackageLock(path).runExclusive(async () => "ok")).resolves.toBe("ok");
-		await writeFile(path, JSON.stringify({ pid: 99999999, acquiredAt: Date.now(), ownerToken: "recent" }));
-		await expect(new PackageLock(path, { retryMs: 2, timeoutMs: 10 }).runExclusive(async () => "no")).rejects.toThrow("lock");
+	it("recovers a stale proper-lockfile lease", async () => {
+		const path = join(await mkdtemp(join(tmpdir(), "lock-")), "global"); const lockDir = `${path}.lock`; await mkdir(lockDir); const old = new Date(Date.now() - 61_000); await utimes(lockDir, old, old);
+		await expect(new PackageLock(path, { retryMs: 2, timeoutMs: 100 }).runExclusive(async () => "ok")).resolves.toBe("ok");
 	});
-	it("does not recover an old lock owned by the live process", async () => {
-		const path = join(await mkdtemp(join(tmpdir(), "lock-")), "global.lock");
-		await writeFile(path, JSON.stringify({ pid: process.pid, acquiredAt: Date.now() - 61_000, ownerToken: "live" }));
-		await expect(new PackageLock(path, { retryMs: 2, timeoutMs: 10 }).runExclusive(async () => undefined)).rejects.toThrow("lock");
-		expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({ ownerToken: "live" });
+	it("configures a 60 second lease with a live-owner heartbeat", async () => {
+		let captured: Record<string, unknown> = {}; const adapter: PackageLockAdapter = { lock: vi.fn(async (_path, options) => { captured = options as unknown as Record<string, unknown>; return async () => undefined; }) };
+		await new PackageLock("/managed/lock", { adapter }).runExclusive(async () => undefined);
+		expect(captured).toMatchObject({ realpath: false, stale: 60_000, update: 20_000 });
 	});
-	it("recovers malformed files only after their filesystem timestamp is stale", async () => {
-		const path = join(await mkdtemp(join(tmpdir(), "lock-")), "global.lock");
-		await writeFile(path, "{partial");
-		await expect(new PackageLock(path, { retryMs: 2, timeoutMs: 10 }).runExclusive(async () => undefined)).rejects.toThrow("lock");
-		const stale = new Date(Date.now() - 61_000); await utimes(path, stale, stale);
-		await expect(new PackageLock(path).runExclusive(async () => "recovered")).resolves.toBe("recovered");
+	it("maps failed acquisition and releases its in-process queue for the next attempt", async () => {
+		const release = vi.fn(async () => undefined); let attempts = 0;
+		const adapter: PackageLockAdapter = { lock: vi.fn(async () => { if (++attempts === 1) throw new Error("busy"); return release; }) }; const lock = new PackageLock("/managed/lock", { adapter });
+		await expect(lock.runExclusive(async () => undefined)).rejects.toThrow("package lock");
+		await expect(lock.runExclusive(async () => "ok")).resolves.toBe("ok"); expect(release).toHaveBeenCalledOnce();
 	});
-	it("closes and removes its lock when owner-record writing fails", async () => {
-		const path = join(await mkdtemp(join(tmpdir(), "lock-")), "global.lock");
-		const failing = new PackageLock(path, { writeOwner: async () => { throw new Error("write failed"); } });
-		await expect(failing.runExclusive(async () => undefined)).rejects.toThrow("write failed");
-		await expect(new PackageLock(path).runExclusive(async () => "ok")).resolves.toBe("ok");
+	it("uses only the owner-bound release callback", async () => {
+		const firstRelease = vi.fn(async () => undefined), secondRelease = vi.fn(async () => undefined); let call = 0;
+		const adapter: PackageLockAdapter = { lock: vi.fn(async () => (++call === 1 ? firstRelease : secondRelease)) };
+		const lock = new PackageLock("/managed/lock", { adapter }); await lock.runExclusive(async () => undefined); expect(firstRelease).toHaveBeenCalledOnce(); expect(secondRelease).not.toHaveBeenCalled();
+		await lock.runExclusive(async () => undefined); expect(firstRelease).toHaveBeenCalledOnce(); expect(secondRelease).toHaveBeenCalledOnce();
 	});
-	it("allows only one contender to recover and preserves the winner's ownership", async () => {
-		const path = join(await mkdtemp(join(tmpdir(), "lock-")), "global.lock");
-		await writeFile(path, JSON.stringify({ pid: 99999999, acquiredAt: Date.now() - 61_000, ownerToken: "dead" }));
-		const active: string[] = []; let running = 0;
-		const contender = (name: string) => new PackageLock(path, { retryMs: 1 }).runExclusive(async () => { running++; expect(running).toBe(1); active.push(name); await new Promise(r => setTimeout(r, 10)); running--; });
-		await Promise.all([contender("a"), contender("b")]); expect(active).toHaveLength(2);
+	it("maps lease compromise and still invokes owner release", async () => {
+		const release = vi.fn(async () => undefined); const gate = deferred();
+		const adapter: PackageLockAdapter = { lock: vi.fn(async (_path, options) => { queueMicrotask(() => options.onCompromised(new Error("lost"))); return release; }) };
+		await expect(new PackageLock("/managed/lock", { adapter }).runExclusive(() => gate.promise)).rejects.toThrow("package lock"); expect(release).toHaveBeenCalledOnce();
 	});
 });
