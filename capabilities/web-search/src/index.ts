@@ -1,19 +1,9 @@
 import { CapabilityError, defineCapability, defineTool, validateCapabilityDefinition } from "@agentic-worktrees/capability-sdk";
 import { searchExaAuto, type WebSearchInput, type WebSearchOutput } from "./exa-client";
-import { webSearchManifest } from "./manifest";
+import { webSearchDescriptor, webSearchManifest } from "./manifest";
 
-const webSearchInputSchema = {
-  type: "object",
-  properties: {
-    query: { type: "string", minLength: 1, maxLength: 2_000 },
-    limit: { type: "integer", minimum: 1, maximum: 20 },
-    recencyDays: { type: "integer", minimum: 1, maximum: 3_650 },
-    domains: { type: "array", items: { type: "string", minLength: 1 }, maxItems: 20 },
-    includeContent: { type: "boolean" },
-  },
-  required: ["query"],
-  additionalProperties: false,
-} as const;
+const webSearchTool = webSearchDescriptor.tools[0];
+if (!webSearchTool) throw new CapabilityError("invalid_input", "Web Search descriptor must declare a tool.");
 
 export function formatAttributedResults(output: WebSearchOutput): string {
   if (!output.results.length) return "No Exa results found.";
@@ -25,9 +15,9 @@ export function createWebSearchCapability({ fetchImpl = fetch }: { fetchImpl?: t
   return validateCapabilityDefinition(defineCapability({
     manifest: webSearchManifest,
     tools: [defineTool<WebSearchInput>({
-      name: "web_search",
-      description: "Search the web and return attributed Exa results.",
-      inputSchema: webSearchInputSchema,
+      name: webSearchTool.name,
+      description: webSearchTool.description,
+      inputSchema: webSearchTool.inputSchema,
       async execute(input, context) {
         if (!input.query.trim()) throw new CapabilityError("invalid_input", "A search query is required.");
         const apiKey = await context.secrets.getOptional("exaApiKey");

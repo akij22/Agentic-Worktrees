@@ -1,9 +1,21 @@
 {
-  "name": "@agentic-worktrees/web-search-capability",
+  "name": "@agentic-worktrees/web-search",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
-  "exports": "./src/index.ts",
+  "main": "./dist/index.js",
+  "exports": "./dist/index.js",
+  "files": ["dist", "capability.json", "README.md", "LICENSE", "LICENSE.pi-web-access"],
+  "keywords": ["agentic-worktrees-capability"],
+  "agenticWorktrees": {
+    "kind": "capability",
+    "manifest": "./capability.json",
+    "entry": "./dist/index.js"
+  },
+  "publishConfig": { "access": "public" },
+  "scripts": {
+    "build": "vite build --config vite.config.ts",
+    "prepack": "npm run build"
+  },
   "dependencies": {
     "@agentic-worktrees/capability-sdk": "0.1.0"
   }
