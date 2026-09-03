@@ -8,7 +8,7 @@ import { ManagedPackageRepository } from "../packages/package-repository";
 import { createManagedPackageLayout } from "../packages/storage-layout";
 import { digestPackageTree } from "../packages/content-digest";
 import { CapabilityRepository } from "./capability-repository";
-import { CapabilityPackageInstaller } from "./capability-package-installer";
+import { CapabilityPackageInstaller, type InstallerFileSystem } from "./capability-package-installer";
 
 const roots: string[] = [];
 async function snapshotTree(root: string, relative = ""): Promise<Array<{ path: string; kind: "directory" | "file"; mode: number; bytes?: string }>> {
@@ -135,6 +135,28 @@ describe("CapabilityPackageInstaller real fixtures", () => {
   it("propagates non-ENOENT pointer reads as a safe path-free failure without target mutation", async () => {
     const f = await fixture(); const pointer = `${f.layout.activePointerPath(f.capabilityId)}.json`; await mkdir(pointer, { recursive: true });
     let error: Error | undefined; try { await new CapabilityPackageInstaller(f.layout, f.repo, f.capabilities, (work) => f.db.transaction(work)()).commitFresh(f.inspected, { capabilityId: f.capabilityId, version: f.version, contentDigest: f.contentDigest, toolNames: [] }); } catch (cause) { error = cause as Error; }
-    expect(error?.message).toBe("package_install_failed"); expect(error?.message).not.toContain(f.root); expect(f.repo.getByPackageName(f.packageName)).toBeUndefined(); expect(f.capabilities.getInstallation(f.capabilityId)).toBeUndefined(); await expect(access(f.staged.packageRoot)).resolves.toBeUndefined(); expect((await import("node:fs/promises")).stat(pointer)).resolves.toMatchObject({});
+    expect(error?.message).toBe("package_install_failed"); expect(error?.message).not.toContain(f.root); expect(f.repo.getByPackageName(f.packageName)).toBeUndefined(); expect(f.capabilities.getInstallation(f.capabilityId)).toBeUndefined(); await expect(access(f.staged.packageRoot)).resolves.toBeUndefined(); await expect((await import("node:fs/promises")).stat(pointer)).resolves.toMatchObject({});
+  });
+
+  for (const failure of ["write", "file-sync", "rename", "directory-sync"] as const) {
+    it(`durably compensates a deterministic pointer ${failure} failure`, async () => {
+      const f = await fixture(); const unrelated = await installUnrelated(f); const baseline = await snapshotInstalledFixture(unrelated);
+      const pointer = `${f.layout.activePointerPath(f.capabilityId)}.json`; const temp = `${pointer}.${process.pid}.tmp`; let renameCalls = 0; const native = await import("node:fs/promises");
+      const fs: InstallerFileSystem = { mkdir: native.mkdir, readFile: (path) => native.readFile(path), stat: native.stat, writeFile: native.writeFile, rm: native.rm,
+        rename: async (from, to) => { renameCalls++; if (failure === "rename" && renameCalls === 2) throw new Error(`${f.root}/rename`); await native.rename(from, to); },
+        open: async (path, flags, mode) => { const handle = await native.open(path, flags, mode); const isDirectory = path === f.layout.activeRoot; return new Proxy(handle, { get(target, property) { if (property === "writeFile" && failure === "write") return async () => { throw new Error(`${f.root}/write`); }; if (property === "sync" && ((failure === "file-sync" && !isDirectory) || (failure === "directory-sync" && isDirectory))) return async () => { throw new Error(`${f.root}/sync`); }; const value = Reflect.get(target, property, target) as unknown; return typeof value === "function" ? value.bind(target) : value; } }) as never; },
+      };
+      let error: Error | undefined; try { await new CapabilityPackageInstaller(f.layout, f.repo, f.capabilities, (work) => f.db.transaction(work)(), { fs }).commitFresh(f.inspected, { capabilityId: f.capabilityId, version: f.version, contentDigest: f.contentDigest, toolNames: [] }); } catch (cause) { error = cause as Error; }
+      expect(error?.message).toBe("package_install_failed"); expect(error?.message).not.toContain(f.root); expect(f.repo.getByPackageName(f.packageName)).toBeUndefined(); expect(f.capabilities.getInstallation(f.capabilityId)).toBeUndefined(); expect(f.repo.snapshotOperation("op-1")).toMatchObject({ status: "failed", stage: "installing" });
+      await expect(access(pointer)).rejects.toMatchObject({ code: "ENOENT" }); await expect(access(temp)).rejects.toMatchObject({ code: "ENOENT" }); await expect(access(f.layout.packageVersionRoot(f.capabilityId, f.version))).rejects.toMatchObject({ code: "ENOENT" }); expect(await snapshotInstalledFixture(unrelated)).toEqual(baseline);
+    });
+  }
+
+  it("records invalid recovery evidence and logs a stable code when cleanup fails", async () => {
+    const f = await fixture(); const native = await import("node:fs/promises"); const destination = f.layout.packageVersionRoot(f.capabilityId, f.version); const logs: string[] = []; let renameCalls = 0;
+    const fs: InstallerFileSystem = { mkdir: native.mkdir, readFile: (path) => native.readFile(path), stat: native.stat, open: native.open, writeFile: native.writeFile,
+      rename: async (from, to) => { renameCalls++; if (renameCalls === 2) throw new Error(`${f.root}/rename`); await native.rename(from, to); }, rm: async (path, options) => { if (path === destination) throw new Error(`${f.root}/cleanup`); await native.rm(path, options); } };
+    await expect(new CapabilityPackageInstaller(f.layout, f.repo, f.capabilities, (work) => f.db.transaction(work)(), { fs, logger: (code) => logs.push(code) }).commitFresh(f.inspected, { capabilityId: f.capabilityId, version: f.version, contentDigest: f.contentDigest, toolNames: [] })).rejects.toThrow("package_install_failed");
+    expect(f.repo.getByPackageName(f.packageName)).toMatchObject({ state: "invalid", errorCode: "package_install_failed" }); expect(f.repo.snapshotOperation("op-1")).toMatchObject({ status: "failed", stage: "installing", errorCode: "package_install_failed" }); expect(logs).toEqual(["package_install_cleanup_failed"]); expect(JSON.stringify(logs)).not.toContain(f.root); await expect(access(destination)).resolves.toBeUndefined();
   });
 });

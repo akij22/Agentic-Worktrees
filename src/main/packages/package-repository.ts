@@ -145,6 +145,14 @@ export class ManagedPackageRepository {
 			return this.requireInstallation(input.packageName);
 		})();
 	}
+	markInstallationInvalid(input: StableInstallationInput, code: PackageErrorCode): ManagedPackageInstallationRecord {
+		const now = Date.now();
+		this.sqlite.prepare(`INSERT INTO managed_package_installations
+			(package_name,item_kind,item_id,requested_spec,active_version,active_integrity,active_content_digest,trust,review_status,accepted_permission_digest,state,error_code,created_at,updated_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,'invalid',?,?,?) ON CONFLICT(package_name) DO UPDATE SET item_kind=excluded.item_kind,item_id=excluded.item_id,requested_spec=excluded.requested_spec,active_version=excluded.active_version,active_integrity=excluded.active_integrity,active_content_digest=excluded.active_content_digest,trust=excluded.trust,review_status=excluded.review_status,accepted_permission_digest=excluded.accepted_permission_digest,state='invalid',error_code=excluded.error_code,updated_at=excluded.updated_at`)
+			.run(input.packageName, input.itemKind, input.itemId, input.requestedSpec, input.activeVersion, input.activeIntegrity, input.activeContentDigest, input.trust, input.reviewStatus, input.permissionDigest, code, now, now);
+		return this.requireInstallation(input.packageName);
+	}
 	failOperation(operationId: string, code: PackageErrorCode): PackageOperationRecord {
 		return this.finishOperation(operationId, "failed", code);
 	}

@@ -155,3 +155,35 @@ Verification:
 - Focused installer: **1 file passed, 21 tests passed**.
 - All four Task 7 files: **4 files passed, 30 tests passed**.
 - Typecheck remains blocked only by the known unrelated `CodingAgentSession.tsx:387` missing `skillInvocations` prop diagnostic.
+
+## Task 7A2 — pointer durability and cleanup-failure semantics
+
+### Architecture and direct coverage
+- Pointer publication now opens the sibling temporary file, writes the exact JSON, calls file `sync()`, closes it, renames it atomically, then opens and syncs the `active/` directory. Known platforms that do not support directory fsync (`EINVAL`, `ENOTSUP`, `EISDIR`) are tolerated; injected failures remain fatal.
+- `InstallerFileSystem` is a narrow injectable adapter over only the filesystem operations used by the transaction. Four deterministic installer cases inject temp-write, file-sync, pointer-rename, and directory-sync failures.
+- Each injected publication failure directly asserts a stable path-free error, absent target managed/configuration rows, failed/installing operation, absent prior pointer/temp/attempt-owned destination, and byte-for-byte preservation of an unrelated real installation.
+- Cleanup failures are accumulated rather than swallowed. The attempted managed installation is persisted as `invalid`, the operation remains `failed/installing`, and the logger receives only `package_install_cleanup_failed`; this leaves startup reconciliation evidence and never reports a completed/installed state.
+- The older pointer `resolves` assertion is now awaited.
+
+### RED/GREEN
+The new failure-injection cases define the previously missing durability behavior (the prior implementation used `writeFile` followed directly by `rename`, had no injectable filesystem seam, and swallowed cleanup errors). After implementing the adapter, fsync sequence, and recovery record, focused GREEN was:
+
+```text
+Test Files  1 passed (1)
+Tests       26 passed (26)
+```
+
+### Verification
+```text
+$ npm test -- --run src/main/capabilities/capability-package-installer.test.ts
+1 file passed; 26 tests passed.
+
+$ npm test -- --run src/main/capabilities/capability-package-installer.test.ts src/main/capabilities/installed-catalog.test.ts src/main/capabilities/capability-distribution-service.test.ts src/main/capabilities/capability-repository.test.ts
+4 files passed; 35 tests passed.
+
+$ npm run typecheck
+Blocked only by the pre-existing unrelated renderer diagnostic at CodingAgentSession.tsx:387: skillInvocations is not a Props member.
+
+$ npm run lint -- --no-fix ...
+Blocked before linting by duplicate eslint-plugin-import resolution between this worktree and the parent checkout.
+```
