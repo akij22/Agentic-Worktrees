@@ -102,6 +102,10 @@ export class ManagedPackageRepository {
 			return this.requireInstallation(input.packageName);
 		})();
 	}
+	snapshotOperation(operationId: string): PackageOperationRecord | undefined {
+		const row = this.sqlite.prepare(`${operationSelect} WHERE operation_id = ?`).get(operationId) as OperationRow | undefined;
+		return row ? operationFromRow(row) : undefined;
+	}
 	beginOperation(input: BeginPackageOperationInput): PackageOperationRecord {
 		return this.sqlite.transaction(() => {
 			const now = Date.now();

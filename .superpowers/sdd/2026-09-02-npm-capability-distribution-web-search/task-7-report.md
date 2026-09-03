@@ -69,7 +69,7 @@ Staged removal now checks ENOENT via access; isolation snapshots a stable instal
 ### Verification evidence
 ```text
 $ npm test -- --run src/main/capabilities/capability-package-installer.test.ts src/main/capabilities/installed-catalog.test.ts src/main/capabilities/capability-distribution-service.test.ts src/main/capabilities/capability-repository.test.ts
-4 files passed; 18 tests passed
+4 files passed; 18 tests passed (including direct installer rollback, stable-error, operation-failure, and orphan-settings assertions).
 
 $ npm run typecheck
 FAIL: pre-existing renderer diagnostic CodingAgentSession.tsx:387 (skillInvocations missing from Props)
