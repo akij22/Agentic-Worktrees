@@ -43,6 +43,9 @@ Focused result: **8 tests passed**.
 ### 7A1 fix round 1
 Added direct assertions for staged-source removal, a real unrelated stable installation record, and persistence of accepted permission digest/default configuration during commit. No activation dependency was added to the installer.
 
+### 7A1 fix round 2
+Staged removal now checks ENOENT via access; isolation snapshots a stable installation record; configuration initialization is invoked from commitFresh and failure rollback is asserted. No activation dependency is introduced; explicit activation spies remain a 7B service concern.
+
 ## Task 7A — installer and installed-catalog hardening
 
 | Requirement | Test/evidence |
