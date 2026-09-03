@@ -21,7 +21,26 @@ function invalid(message: string): never {
 
 function record(value: unknown, label: string): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) invalid(`Invalid ${label}.`);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) invalid(`Invalid ${label}.`);
   return value as Record<string, unknown>;
+}
+
+function assertJsonValue(value: unknown, label: string, ancestors = new Set<object>()): void {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) invalid(`Invalid ${label}: expected a finite JSON number.`);
+    return;
+  }
+  if (typeof value !== "object") invalid(`Invalid ${label}: expected JSON data.`);
+  if (ancestors.has(value)) invalid(`Invalid ${label}: cyclic JSON data is not allowed.`);
+
+  const prototype = Object.getPrototypeOf(value);
+  if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) invalid(`Invalid ${label}: expected a plain JSON object.`);
+
+  ancestors.add(value);
+  for (const child of Array.isArray(value) ? value : Object.values(value)) assertJsonValue(child, label, ancestors);
+  ancestors.delete(value);
 }
 
 function exactKeys(value: Record<string, unknown>, allowed: readonly string[], label: string): void {
@@ -98,7 +117,7 @@ export function validateCapabilityManifest(value: unknown): CapabilityManifest {
   const settings = record(manifest.settings, "manifest.settings");
   const secretSettings = Object.entries(settings).filter(([, setting]) => validateSetting(setting, "manifest setting").type === "secret").map(([key]) => key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`));
   if (secretSettings.some((secret) => !(permissions.secrets as string[]).includes(secret))) throw new CapabilityError("permission_denied", "A secret setting is not declared in permissions.");
-  return manifest as unknown as CapabilityManifest;
+  return deepFreeze(structuredClone(manifest)) as unknown as CapabilityManifest;
 }
 
 function validateStaticTool(value: unknown): CapabilityStaticTool {
@@ -106,6 +125,7 @@ function validateStaticTool(value: unknown): CapabilityStaticTool {
   exactKeys(tool, ["name", "description", "inputSchema"], "tool");
   if (!TOOL_NAME.test(string(tool.name, "tool name"))) invalid("Invalid tool name.");
   string(tool.description, "tool description");
+  assertJsonValue(tool.inputSchema, "tool input JSON Schema");
   const schema = record(tool.inputSchema, "tool input JSON Schema");
   try { ajv.compile(schema); } catch { invalid("Invalid tool input JSON Schema."); }
   return tool as unknown as CapabilityStaticTool;
