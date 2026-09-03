@@ -25,6 +25,14 @@ export async function verifyCapabilityPackageRequest(raw: unknown): Promise<Capa
   return { type: "capability.verified", requestId: request.requestId, capabilityId: projected.manifest.id, version: projected.manifest.version, toolNames: projected.tools.map(tool => tool.name), contentDigest };
 }
 
+export async function handleCapabilityVerificationMessage(
+  raw: unknown,
+  dependencies: { verify?: typeof verifyCapabilityPackageRequest } = {},
+): Promise<CapabilityVerificationResult | { type: "capability.verification-error"; requestId: string; code: "verification_failed" }> {
+  try { return await (dependencies.verify ?? verifyCapabilityPackageRequest)(raw); }
+  catch { return safeCapabilityVerificationError(raw); }
+}
+
 export function safeCapabilityVerificationError(raw: unknown): { type: "capability.verification-error"; requestId: string; code: "verification_failed" } {
   const requestId = !!raw && typeof raw === "object" && "requestId" in raw && typeof raw.requestId === "string" && raw.requestId.length <= 4096 ? raw.requestId : "invalid";
   return { type: "capability.verification-error", requestId, code: "verification_failed" };

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CapabilityStaticDescriptor } from "@agentic-worktrees/capability-sdk";
 import { digestPackageTree } from "../packages/content-digest";
-import { safeCapabilityVerificationError, verifyCapabilityPackageRequest } from "./package-verifier-request";
+import { handleCapabilityVerificationMessage, verifyCapabilityPackageRequest } from "./package-verifier-request";
 
 const descriptor: CapabilityStaticDescriptor = { manifest: { id: "example.cap", name: "Example", version: "1.0.0", sdkVersion: "^0.1.0", description: "Example", category: "test", author: { name: "Test" }, license: "MIT", compatibility: { codex: "supported", opencode: "supported" }, permissions: { network: [], secrets: [] }, settings: {} }, tools: [{ name: "example", description: "Example", inputSchema: { type: "object" } }] };
 
@@ -41,9 +41,10 @@ describe("verifyCapabilityPackageRequest", () => {
     const changed = { ...descriptor, manifest: { ...descriptor.manifest, name: "Changed" } }; const item = await fixture(moduleSource(changed));
     await expect(verifyCapabilityPackageRequest(item.request)).rejects.toThrow("verification failed");
   });
-  it("redacts raw import errors", async () => {
+  it("redacts raw import errors at the utility message boundary", async () => {
     const item = await fixture("throw new Error('SECRET LOCAL IMPORT DETAIL');");
-    await expect(verifyCapabilityPackageRequest(item.request).catch(() => { throw new Error(safeCapabilityVerificationError(item.request).code); })).rejects.toThrow("verification_failed");
-    expect(safeCapabilityVerificationError(item.request)).toEqual({ type: "capability.verification-error", requestId: item.request.requestId, code: "verification_failed" });
+    const response = await handleCapabilityVerificationMessage(item.request);
+    expect(response).toEqual({ type: "capability.verification-error", requestId: item.request.requestId, code: "verification_failed" });
+    expect(JSON.stringify(response)).not.toContain("SECRET LOCAL IMPORT DETAIL");
   });
 });
