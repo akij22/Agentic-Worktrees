@@ -19,4 +19,12 @@ describe("signOfficialCatalog", () => {
     expect(Buffer.from(envelope.payload, "base64url").toString()).toBe(payload);
     expect(verify(null, Buffer.from(envelope.payload, "base64url"), publicKey, Buffer.from(envelope.signature, "base64url"))).toBe(true);
   });
+  it("rejects malformed UTF-8 input before signing", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sign-catalog-"));
+    const input = join(root, "payload.json"), output = join(root, "envelope.json");
+    await writeFile(input, Buffer.from([0xff]));
+    const { privateKey } = generateKeyPairSync("ed25519");
+    await expect(signOfficialCatalog({ inputPath: input, outputPath: output, keyId: "release-1", privateKeyPem: privateKey.export({ format: "pem", type: "pkcs8" }).toString() })).rejects.toThrow();
+    await expect(readFile(output)).rejects.toThrow();
+  });
 });

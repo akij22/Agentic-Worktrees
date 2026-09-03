@@ -67,3 +67,41 @@ Result: PASS (no whitespace errors).
 
 - Production public keys intentionally remain unconfigured in this task because no authorized production public key was supplied. The default service therefore safely uses the embedded fallback until release configuration injects an approved public key.
 - The known unrelated renderer typecheck error remains unchanged.
+
+## Fix round 1
+
+### Changes
+
+- Split remote fetch/decode/verify/validation from mutation. Timed-out attempts are marked inactive before abort, so abort-ignoring fetches and streams cannot commit late.
+- Serialized cache commits and re-check sequence against the latest cached/in-memory snapshot inside the commit critical section, preventing an older concurrent refresh from replacing a newer one.
+- Added fatal UTF-8 decoding for signed payloads and signer input.
+- Kept structural/identity validation for embedded fallback while exempting trusted release fallback data from runtime expiry rejection.
+- Enforced canonical UTC ISO-8601 millisecond timestamps, future issuance/update rejection, and expiry-after-issuance.
+- Added deterministic timeout, late completion, concurrent ordering, oversized response, malformed UTF-8, timestamp, and expired-fallback tests.
+
+### TDD evidence
+
+RED command:
+
+```text
+npm test -- src/main/packages/catalog/official-catalog.test.ts scripts/catalog/sign-official-catalog.test.ts
+```
+
+Result before fixes: FAIL — 2 failing tests demonstrated acceptance of noncanonical/future timestamps and rejection of an expired embedded fallback. The newly added race/limit tests also exercised the required scenarios.
+
+GREEN command:
+
+```text
+npm test -- src/main/packages/catalog/official-catalog.test.ts scripts/catalog/sign-official-catalog.test.ts
+```
+
+Result: PASS — 2 test files, 11 tests.
+
+Verification:
+
+- `npm run typecheck` — Task 5 files pass; command remains blocked only by the known unrelated `CodingAgentSession.tsx:387` `skillInvocations` renderer error.
+- `git diff --check` — PASS.
+
+### Fix-round self-review and concerns
+
+The mutation boundary now begins only after a live attempt produces a fully verified candidate. Commit serialization covers both latest-sequence evaluation and atomic cache replacement. No production envelope/private key was created. The only remaining concern is the previously documented absence of an authorized production public key; the default continues to fail safely to trusted fallback.
