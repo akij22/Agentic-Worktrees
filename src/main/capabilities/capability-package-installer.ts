@@ -9,7 +9,7 @@ import type { ManagedPackageLayout } from "../packages/storage-layout";
 import type { CapabilityRepository } from "./capability-repository";
 
 export class CapabilityPackageInstaller {
-  constructor(private readonly layout: ManagedPackageLayout, private readonly repository = new ManagedPackageRepository(), private readonly hooks: { verifyCommittedPath?: (path: string, expectedDigest: string) => Promise<void>; refreshCatalog?: () => Promise<void>; capabilityRepository?: CapabilityRepository } = {}) {}
+  constructor(private readonly layout: ManagedPackageLayout, private readonly repository: ManagedPackageRepository, private readonly capabilityRepository: CapabilityRepository, private readonly runInTransaction: <T>(work: () => T) => T, private readonly hooks: { verifyCommittedPath?: (path: string, expectedDigest: string) => Promise<void>; refreshCatalog?: () => Promise<void> } = {}) {}
   async commitFresh(inspected: InspectedCapabilityPackage, verification: CapabilityExecutableVerification): Promise<ManagedPackageInstallationRecord> {
     const s = inspected.staged;
     if (verification.contentDigest !== s.contentDigest || verification.capabilityId !== inspected.descriptor.manifest.id || verification.version !== s.resolvedVersion) throw new Error("package_verification_failed");
@@ -28,8 +28,7 @@ export class CapabilityPackageInstaller {
       const data = { packageName: s.packageName, capabilityId: inspected.descriptor.manifest.id, version: s.resolvedVersion, integrity: s.integrity, contentDigest: s.contentDigest, manifestPath: inspected.packageMetadata.manifest, entryPath: inspected.packageMetadata.entry };
       const temp = `${pointer}.${process.pid}.tmp`;
       await mkdir(dirname(pointer), { recursive: true, mode: 0o700 }); await writeFile(temp, JSON.stringify(data), { mode: 0o600 }); await rename(temp, pointer);
-      this.hooks.capabilityRepository?.initializeInstalledConfiguration(inspected.descriptor.manifest, inspected.permissionDigest);
-      const record = this.repository.commitInstallation(s.operationId, { packageName: s.packageName, itemKind: "capability", itemId: inspected.descriptor.manifest.id, requestedSpec: s.requestedSpec, activeVersion: s.resolvedVersion, activeIntegrity: s.integrity, activeContentDigest: s.contentDigest, trust: inspected.trust, reviewStatus: inspected.reviewStatus, permissionDigest: inspected.permissionDigest, state: "installed" });
+      const record = this.runInTransaction(() => { this.capabilityRepository.initializeInstalledConfiguration(inspected.descriptor.manifest, inspected.permissionDigest); return this.repository.commitInstallation(s.operationId, { packageName: s.packageName, itemKind: "capability", itemId: inspected.descriptor.manifest.id, requestedSpec: s.requestedSpec, activeVersion: s.resolvedVersion, activeIntegrity: s.integrity, activeContentDigest: s.contentDigest, trust: inspected.trust, reviewStatus: inspected.reviewStatus, permissionDigest: inspected.permissionDigest, state: "installed" }); });
       await this.hooks.refreshCatalog?.();
       return record;
     } catch (error) { await rm(pointer, { force: true }).catch(() => undefined); await rm(destination, { recursive: true, force: true }).catch(() => undefined); throw error; }

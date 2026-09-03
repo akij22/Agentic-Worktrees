@@ -9,13 +9,15 @@ import { ManagedPackageRepository } from "../packages/package-repository";
 import type { ManagedPackageLayout } from "../packages/storage-layout";
 import { OfficialCatalogService } from "../packages/catalog/official-catalog";
 import { PackageLock } from "../packages/package-lock";
+import { CapabilityRepository } from "./capability-repository";
+import { getSqlite } from "../database/client";
 
 export class CapabilityDistributionService {
   private readonly listeners = new Set<(event: CapabilityDistributionProgress) => void>();
   private readonly inspections = new Map<string, { inspected: InspectedCapabilityPackage; expires: number }>();
   private busy = false;
   constructor(private readonly deps: { layout: ManagedPackageLayout; acquirer?: NpmPackageAcquirer; inspector?: CapabilityPackageInspector; verifier: CapabilityPackageVerifier; installer?: CapabilityPackageInstaller; repository?: ManagedPackageRepository; officialCatalog?: OfficialCatalogService; packageLock?: PackageLock }) {
-    this.acquirer = deps.acquirer ?? new NpmPackageAcquirer(deps.layout); this.inspector = deps.inspector ?? new CapabilityPackageInspector(); this.installer = deps.installer ?? new CapabilityPackageInstaller(deps.layout, deps.repository);
+    this.acquirer = deps.acquirer ?? new NpmPackageAcquirer(deps.layout); this.inspector = deps.inspector ?? new CapabilityPackageInspector(); this.installer = deps.installer ?? new CapabilityPackageInstaller(deps.layout, deps.repository ?? new ManagedPackageRepository(), new CapabilityRepository(getSqlite()), <T>(work: () => T) => getSqlite().transaction(work)());
   }
   private acquirer: NpmPackageAcquirer; private inspector: CapabilityPackageInspector; private installer: CapabilityPackageInstaller;
   subscribe(listener: (event: CapabilityDistributionProgress) => void) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
