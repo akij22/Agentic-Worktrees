@@ -22,7 +22,7 @@ export interface ConsentLease<Inspection, Payload, Result> {
 interface StartOptions<Acquired, Inspection, Payload, Result> {
   operationId: string;
   acquire(): Promise<Acquired>;
-  inspect(acquired: Acquired, timing: Readonly<{ expiresAt: number }>): Inspection;
+  inspect(acquired: Acquired, timing: Readonly<{ expiresAt: number }>): Inspection | Promise<Inspection>;
   accept(payload: Payload, acquired: Acquired): Promise<Result>;
   cleanup(): Promise<void>;
 }
@@ -77,7 +77,7 @@ export class ConsentLeaseRegistry {
       try {
         try {
           acquired = await options.acquire();
-          const inspection = freeze(options.inspect(acquired, freeze({ expiresAt: this.options.clock() + this.timeoutMs })));
+          const inspection = freeze(await options.inspect(acquired, freeze({ expiresAt: this.options.clock() + this.timeoutMs })));
           ready.resolve(inspection);
         }
         catch { const safe = safeError("package_inspection_failed"); ready.reject(safe); throw safe; }
