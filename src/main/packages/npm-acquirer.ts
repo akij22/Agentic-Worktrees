@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, realpath, rm } from "node:fs/promises";
+import { mkdir, open, realpath, rm } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import pacote from "pacote";
 import semver from "semver";
@@ -35,8 +35,14 @@ export class NpmPackageAcquirer {
 			this.throwIfAborted(signal); onStage("downloading"); await mkdir(packageRoot, { recursive: true, mode: 0o700 }); await this.adapter.extract(source, packageRoot, signal);
 			this.throwIfAborted(signal); onStage("verifying"); const canonical = await realpath(packageRoot); const rel = relative(operationRoot, canonical); if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("Extracted package escapes staging root");
 			const contentDigest = await digestPackageTree(packageRoot); const manifestPath = resolve(packageRoot, "package.json"); const handle = await open(manifestPath, "r").catch(() => { throw new Error("Package root must contain package.json"); });
-			try { const stat = await handle.stat(); if (!stat.isFile() || stat.size > 256 * 1024) throw new Error("package.json is invalid or too large"); } finally { await handle.close(); }
-			const packageJson: unknown = JSON.parse(await readFile(manifestPath, "utf8")); this.throwIfAborted(signal);
+			let packageJson: unknown;
+			try {
+				const before = await handle.stat(); if (!before.isFile() || before.nlink !== 1 || before.size > 256 * 1024) throw new Error("package.json is invalid or too large");
+				const bytes = await handle.readFile(); const after = await handle.stat();
+				if (bytes.length !== before.size || after.size !== before.size || after.ino !== before.ino || after.mtimeMs !== before.mtimeMs) throw new Error("package.json changed during verification");
+				packageJson = JSON.parse(bytes.toString("utf8"));
+			} finally { await handle.close(); }
+			this.throwIfAborted(signal);
 			return { ...source, operationId, packageRoot, packageJson, contentDigest };
 		} catch (error) { await rm(operationRoot, { recursive: true, force: true }); throw error; }
 	}
