@@ -35,6 +35,27 @@ async function fixture() {
   repo.beginOperation({ operationId, action: "install", stage: "installing", packageName, requestedSpec: staged.requestedSpec });
   return { root, layout, db, repo, capabilities, staged, inspected, capabilityId, version, packageName, integrity, contentDigest };
 }
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+async function installUnrelated(f: Fixture) {
+  const capabilityId = "other.cap", packageName = "@example/other", version = "2.0.0", operationId = "op-other";
+  const stage = join(f.layout.stagingOperationRoot(operationId), "package"); await mkdir(join(stage, "bin/nested"), { recursive: true });
+  const descriptor = { manifest: { id: capabilityId, version, name: "Other", description: "Other", sdkVersion: ">=0.1.0", permissions: [], settings: { mode: { type: "string", default: "safe" } } }, entry: "./bin/main.js" };
+  await writeFile(join(stage, "package.json"), JSON.stringify({ name: packageName, version, agenticWorktrees: { kind: "capability", manifest: "./capability.json", entry: "./bin/main.js" } })); await writeFile(join(stage, "capability.json"), JSON.stringify(descriptor)); await writeFile(join(stage, "bin/main.js"), "exports.stable = true;", { mode: 0o744 }); await writeFile(join(stage, "bin/nested/data.bin"), Buffer.from([0, 1, 2, 255]), { mode: 0o640 });
+  const contentDigest = await digestPackageTree(stage); const requestedSpec = `${packageName}@${version}`; f.repo.beginOperation({ operationId, action: "install", stage: "installing", packageName, requestedSpec });
+  const inspected = { staged: { packageRoot: stage, packageName, resolvedVersion: version, integrity: "other-integrity", contentDigest, operationId, requestedSpec }, descriptor, packageMetadata: { kind: "capability", manifest: "./capability.json", entry: "./bin/main.js" }, permissionDigest: "other-perm", trust: "community", reviewStatus: "unreviewed" } as never;
+  await new CapabilityPackageInstaller(f.layout, f.repo, f.capabilities, (work) => f.db.transaction(work)()).commitFresh(inspected, { capabilityId, version, contentDigest, toolNames: [] });
+  return { f, capabilityId, packageName, version };
+}
+async function snapshotInstalledFixture(unrelated: Awaited<ReturnType<typeof installUnrelated>>) {
+  const { f, capabilityId, packageName, version } = unrelated;
+  return { tree: await snapshotTree(f.layout.packageVersionRoot(capabilityId, version)), pointer: await readFile(`${f.layout.activePointerPath(capabilityId)}.json`), managedInstallation: f.repo.getByPackageName(packageName), capabilityInstallation: f.capabilities.getInstallation(capabilityId), settings: f.capabilities.getSettings(capabilityId) };
+}
+async function createTargetAttempt(f: Fixture, operationId: string) {
+  const stage = join(f.layout.stagingOperationRoot(operationId), "package"); await mkdir(join(stage, "dist"), { recursive: true }); const descriptor = (f.inspected as never as { descriptor: object }).descriptor;
+  await writeFile(join(stage, "package.json"), JSON.stringify({ name: f.packageName, version: f.version, agenticWorktrees: { kind: "capability", manifest: "./capability.json", entry: "./dist/index.js" } })); await writeFile(join(stage, "capability.json"), JSON.stringify(descriptor)); await writeFile(join(stage, "dist/index.js"), "module.exports = {};");
+  const contentDigest = await digestPackageTree(stage); const requestedSpec = `${f.packageName}@${f.version}`; f.repo.beginOperation({ operationId, action: "install", stage: "installing", packageName: f.packageName, requestedSpec });
+  return { inspected: { ...(f.inspected as never as object), staged: { packageRoot: stage, packageName: f.packageName, resolvedVersion: f.version, integrity: f.integrity, contentDigest, operationId, requestedSpec } } as never, contentDigest };
+}
 afterEach(async () => { while (roots.length) await rm(roots.pop()!, { recursive: true, force: true }); });
 
 describe("CapabilityPackageInstaller real fixtures", () => {
@@ -81,22 +102,29 @@ describe("CapabilityPackageInstaller real fixtures", () => {
     const f = await fixture(); const snapshot = f.capabilities.snapshotInstalledConfiguration(f.capabilityId); f.db.pragma("foreign_keys = OFF"); f.db.prepare("INSERT INTO capability_settings (id,capability_id,key,value_json,created_at,updated_at) VALUES ('orphan',?,?,?,1,1)").run(f.capabilityId, "x", JSON.stringify("y")); f.capabilities.restoreInstalledConfiguration(snapshot); expect(f.capabilities.getSettings(f.capabilityId)).toEqual([]); expect(f.capabilities.getInstallation(f.capabilityId)).toBeUndefined();
   });
 
-  it("keeps the exact baseline when compensation is invoked twice", async () => {
-    const f = await fixture(); const operation = f.repo.snapshotOperation("op-1")!; const config = f.capabilities.snapshotInstalledConfiguration(f.capabilityId); const expected = { operationId: "op-1", packageName: f.packageName, requestedSpec: f.staged.requestedSpec };
-    for (let i = 0; i < 2; i++) { f.repo.restoreInstallation(f.packageName, undefined); f.capabilities.restoreInstalledConfiguration(config); f.repo.compensateFailedInstall(operation, expected, "package_install_failed"); }
-    expect(f.repo.getByPackageName(f.packageName)).toBeUndefined(); expect(f.capabilities.snapshotInstalledConfiguration(f.capabilityId)).toEqual(config); expect(f.repo.snapshotOperation("op-1")?.status).toBe("failed");
+  it.each([
+    ["target success", "success"],
+    ["committed-path verification failure", "verification"],
+    ["managed DB commit failure after capability initialization", "database"],
+    ["catalog refresh failure", "catalog"],
+  ] as const)("preserves the exact unrelated installed fixture after %s", async (_name, path) => {
+    const f = await fixture(); const unrelated = await installUnrelated(f); const before = await snapshotInstalledFixture(unrelated); const hooks: ConstructorParameters<typeof CapabilityPackageInstaller>[4] = {};
+    if (path === "verification") hooks.verifyCommittedPath = async () => { throw new Error("verification failed"); };
+    if (path === "catalog") hooks.refreshCatalog = async () => { throw new Error("catalog failed"); };
+    if (path === "database") vi.spyOn(f.repo, "commitInstallation").mockImplementation(() => { expect(f.capabilities.getInstallation(f.capabilityId)).toBeDefined(); throw new Error("database failed"); });
+    const result = new CapabilityPackageInstaller(f.layout, f.repo, f.capabilities, (work) => f.db.transaction(work)(), hooks).commitFresh(f.inspected, { capabilityId: f.capabilityId, version: f.version, contentDigest: f.contentDigest, toolNames: [] });
+    if (path === "success") await expect(result).resolves.toMatchObject({ packageName: f.packageName }); else await expect(result).rejects.toThrow("package_install_failed");
+    expect(await snapshotInstalledFixture(unrelated)).toEqual(before);
   });
 
-  it("preserves a complete recursively snapshotted unrelated real installation across target failure", async () => {
-    const f = await fixture(); const otherId = "other.cap"; const otherPackage = "@example/other"; const otherVersion = "2.0.0"; const otherOperation = "op-other"; const otherStage = join(f.layout.stagingOperationRoot(otherOperation), "package"); await mkdir(join(otherStage, "bin"), { recursive: true });
-    const otherDescriptor = { manifest: { id: otherId, version: otherVersion, name: "Other", description: "Other", sdkVersion: ">=0.1.0", permissions: [], settings: { mode: { type: "string", default: "safe" } } }, entry: "./bin/main.js" };
-    await writeFile(join(otherStage, "package.json"), JSON.stringify({ name: otherPackage, version: otherVersion, agenticWorktrees: { kind: "capability", manifest: "./capability.json", entry: "./bin/main.js" } })); await writeFile(join(otherStage, "capability.json"), JSON.stringify(otherDescriptor)); await writeFile(join(otherStage, "bin/main.js"), "exports.stable = true;", { mode: 0o744 }); const otherDigest = await digestPackageTree(otherStage);
-    f.repo.beginOperation({ operationId: otherOperation, action: "install", stage: "installing", packageName: otherPackage, requestedSpec: `${otherPackage}@${otherVersion}` });
-    const otherInspected = { staged: { packageRoot: otherStage, packageName: otherPackage, resolvedVersion: otherVersion, integrity: "other-integrity", contentDigest: otherDigest, operationId: otherOperation, requestedSpec: `${otherPackage}@${otherVersion}` }, descriptor: otherDescriptor, packageMetadata: { kind: "capability", manifest: "./capability.json", entry: "./bin/main.js" }, permissionDigest: "other-perm", trust: "community", reviewStatus: "unreviewed" } as never;
-    const real = new CapabilityPackageInstaller(f.layout, f.repo, f.capabilities, (work) => f.db.transaction(work)()); await real.commitFresh(otherInspected, { capabilityId: otherId, version: otherVersion, contentDigest: otherDigest, toolNames: [] });
-    const otherRoot = f.layout.packageVersionRoot(otherId, otherVersion); const before = { tree: await snapshotTree(otherRoot), pointer: await readFile(`${f.layout.activePointerPath(otherId)}.json`), managed: f.repo.getByPackageName(otherPackage), config: f.capabilities.snapshotInstalledConfiguration(otherId) };
-    await expect(new CapabilityPackageInstaller(f.layout, f.repo, f.capabilities, (work) => f.db.transaction(work)(), { refreshCatalog: async () => { throw new Error("target failure"); } }).commitFresh(f.inspected, { capabilityId: f.capabilityId, version: f.version, contentDigest: f.contentDigest, toolNames: [] })).rejects.toThrow("package_install_failed");
-    expect({ tree: await snapshotTree(otherRoot), pointer: await readFile(`${f.layout.activePointerPath(otherId)}.json`), managed: f.repo.getByPackageName(otherPackage), config: f.capabilities.snapshotInstalledConfiguration(otherId) }).toEqual(before);
+  it("fully compensates two consecutive catalog failures through commitFresh without baseline drift", async () => {
+    const f = await fixture(); const unrelated = await installUnrelated(f); const unrelatedBaseline = await snapshotInstalledFixture(unrelated); const targetBaseline = { managed: f.repo.getByPackageName(f.packageName), configuration: f.capabilities.snapshotInstalledConfiguration(f.capabilityId) }; const pointer = `${f.layout.activePointerPath(f.capabilityId)}.json`; const destination = f.layout.packageVersionRoot(f.capabilityId, f.version); const temp = `${pointer}.${process.pid}.tmp`;
+    const attempts = [{ inspected: f.inspected, contentDigest: f.contentDigest, operationId: "op-1" }, { ...(await createTargetAttempt(f, "op-2")), operationId: "op-2" }];
+    for (const attempt of attempts) {
+      await expect(new CapabilityPackageInstaller(f.layout, f.repo, f.capabilities, (work) => f.db.transaction(work)(), { refreshCatalog: async () => { throw new Error("catalog failed"); } }).commitFresh(attempt.inspected, { capabilityId: f.capabilityId, version: f.version, contentDigest: attempt.contentDigest, toolNames: [] })).rejects.toThrow("package_install_failed");
+      expect(f.repo.getByPackageName(f.packageName)).toEqual(targetBaseline.managed); expect(f.capabilities.snapshotInstalledConfiguration(f.capabilityId)).toEqual(targetBaseline.configuration); expect(f.repo.snapshotOperation(attempt.operationId)).toMatchObject({ status: "failed", stage: "installing", errorCode: "package_install_failed" });
+      await expect(access(pointer)).rejects.toMatchObject({ code: "ENOENT" }); await expect(access(destination)).rejects.toMatchObject({ code: "ENOENT" }); await expect(access(temp)).rejects.toMatchObject({ code: "ENOENT" }); expect(await snapshotInstalledFixture(unrelated)).toEqual(unrelatedBaseline);
+    }
   });
 
   it("does not mutate target state when operation repository snapshot fails", async () => {

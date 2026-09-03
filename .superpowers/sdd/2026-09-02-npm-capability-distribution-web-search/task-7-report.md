@@ -137,3 +137,21 @@ Snapshot acquisition is now an explicit read-only phase guarded by `snapshotsCom
 - All four Task 7 files: **4 files passed, 27 tests passed**.
 - `npm run typecheck`: Task 7A1R files pass; blocked only by the known unrelated `CodingAgentSession.tsx:387` missing `skillInvocations` prop diagnostic.
 - `npm run lint -- --no-fix`: blocked by duplicate `eslint-plugin-import` resolution between the worktree and parent checkout.
+
+## Task 7A1R fix round 3
+
+Added reusable `snapshotInstalledFixture(unrelated)` coverage over an unrelated capability installed through the real installer. Its snapshot includes every recursive package entry (relative path, type, permission mode, and base64 bytes), exact pointer bytes, managed installation, capability installation, and settings.
+
+Direct isolation cases:
+- `preserves the exact unrelated installed fixture after target success`
+- `preserves the exact unrelated installed fixture after committed-path verification failure`
+- `preserves the exact unrelated installed fixture after managed DB commit failure after capability initialization`
+- `preserves the exact unrelated installed fixture after catalog refresh failure`
+
+Direct installer idempotency:
+- `fully compensates two consecutive catalog failures through commitFresh without baseline drift` invokes two real target operations through `commitFresh`; after each post-commit catalog failure it asserts exact target DB/configuration baseline, failed/installing operation semantics, pointer/destination/temp absence, and exact unrelated snapshot equality. It does not invoke repository restore APIs from the test.
+
+Verification:
+- Focused installer: **1 file passed, 21 tests passed**.
+- All four Task 7 files: **4 files passed, 30 tests passed**.
+- Typecheck remains blocked only by the known unrelated `CodingAgentSession.tsx:387` missing `skillInvocations` prop diagnostic.
