@@ -16,22 +16,25 @@ export class DisposableCapabilityPackageVerifier implements CapabilityPackageVer
     const requestId = randomUUID(), child = this.dependencies.launch(requestId);
     return new Promise((resolve, reject) => {
       let settled = false;
-      const finish = (error?: Error, result?: CapabilityExecutableVerification) => { if (settled) return; settled = true; clearTimeout(timer); signal.removeEventListener("abort", cancelled); child.kill(); error ? reject(error) : resolve(result!); };
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (error?: Error, result?: CapabilityExecutableVerification) => { if (settled) return; settled = true; if (timer) clearTimeout(timer); signal.removeEventListener("abort", cancelled); try { child.kill(); } catch { /* cleanup is best effort */ } error ? reject(error) : resolve(result!); };
       const cancelled = () => finish(signal.reason instanceof Error ? signal.reason : new Error("Capability verification cancelled"));
-      const timer = setTimeout(() => finish(new Error("Capability verification timed out")), this.dependencies.timeoutMs ?? 10_000);
-      signal.addEventListener("abort", cancelled, { once: true });
-      child.onExit(() => finish(new Error("Capability verifier stopped unexpectedly")));
-      child.onMessage((raw) => {
-        const value = raw && typeof raw === "object" && "data" in raw ? (raw as { data: unknown }).data : raw;
-        const result = capabilityVerificationResultSchema.safeParse(value);
-        if (result.success && result.data.requestId === requestId) {
-          if (result.data.contentDigest !== inspected.staged.contentDigest || result.data.capabilityId !== inspected.descriptor.manifest.id || result.data.version !== inspected.descriptor.manifest.version) return finish(new Error("Capability verification result mismatch"));
-          return finish(undefined, { capabilityId: result.data.capabilityId, version: result.data.version, toolNames: Object.freeze([...result.data.toolNames]), contentDigest: result.data.contentDigest });
-        }
-        const failure = capabilityVerificationErrorSchema.safeParse(value);
-        finish(new Error(failure.success && failure.data.requestId === requestId ? "Capability executable verification failed" : "Capability verifier returned malformed output"));
-      });
-      child.postMessage({ type: "capability.verify", requestId, packageRoot: inspected.staged.packageRoot, entry: inspected.packageMetadata.entry, expectedContentDigest: inspected.staged.contentDigest, expectedDescriptor: inspected.descriptor });
+      timer = setTimeout(() => finish(new Error("Capability verification timed out")), this.dependencies.timeoutMs ?? 10_000);
+      try {
+        signal.addEventListener("abort", cancelled, { once: true });
+        child.onExit(() => finish(new Error("Capability verifier stopped unexpectedly")));
+        child.onMessage((raw) => {
+          const value = raw && typeof raw === "object" && "data" in raw ? (raw as { data: unknown }).data : raw;
+          const result = capabilityVerificationResultSchema.safeParse(value);
+          if (result.success && result.data.requestId === requestId) {
+            if (result.data.contentDigest !== inspected.staged.contentDigest || result.data.capabilityId !== inspected.descriptor.manifest.id || result.data.version !== inspected.descriptor.manifest.version) return finish(new Error("Capability verification result mismatch"));
+            return finish(undefined, { capabilityId: result.data.capabilityId, version: result.data.version, toolNames: Object.freeze([...result.data.toolNames]), contentDigest: result.data.contentDigest });
+          }
+          const failure = capabilityVerificationErrorSchema.safeParse(value);
+          finish(new Error(failure.success && failure.data.requestId === requestId ? "Capability executable verification failed" : "Capability verifier returned malformed output"));
+        });
+        child.postMessage({ type: "capability.verify", requestId, packageRoot: inspected.staged.packageRoot, entry: inspected.packageMetadata.entry, expectedContentDigest: inspected.staged.contentDigest, expectedDescriptor: inspected.descriptor });
+      } catch { finish(new Error("Capability verifier setup failed")); }
     });
   }
 }
