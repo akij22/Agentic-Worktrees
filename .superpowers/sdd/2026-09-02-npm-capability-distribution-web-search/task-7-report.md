@@ -1,5 +1,45 @@
 # Task 7 report
 
+## Task 7B0 — cross-call consent lease under PackageLock
+
+`ConsentLeaseRegistry` starts one observed `PackageLock.runExclusive()` owner promise per operation. Readiness is independently published after static acquisition/inspection, while the owner callback remains suspended under the same lock until one terminal command wins.
+
+```text
+START -> ACQUIRING (lock owner entered)
+  | acquisition/static failure -> CLEANUP -> FAILED -> RELEASED/REMOVED
+  v
+AWAITING_CONSENT (immutable ready DTO published; 15-minute timer armed)
+  | accept -----------------> HEALTH CHECK -> VERIFY+COMMIT -> CLEANUP -> COMPLETED
+  | cancel -------------------------------> CLEANUP -> CANCELLED
+  | deterministic expiry ----------------> CLEANUP -> EXPIRED
+  | lock compromised + accept -> HEALTH CHECK FAIL -> CLEANUP -> FAILED
+All terminal paths clear the timer, release the owner-bound lock, and remove the registry entry.
+```
+
+### Direct requirement evidence
+
+| Requirement | Direct test |
+|---|---|
+| Readiness resolves before release and lock remains held | `publishes immutable readiness before release and holds the lock awaiting consent` |
+| Accept verifies/commits before release and returns result | `accepts once, commits inside the owner callback, cleans once, and releases afterward` |
+| Cancel skips callback, cleans once, releases, clears timer | `cancel skips commit, cleans once, releases, and clears its timer` |
+| Exact deterministic 15-minute expiry | `expires deterministically after exactly 15 minutes without commit` |
+| Static acquisition/inspection failure is safe and cleaned | `maps acquisition/inspection failure to a stable path-free error and cleans owned staging once` |
+| Lock acquisition failure does not clean unowned staging | `maps lock acquisition failure without cleaning an unowned staging path` |
+| Duplicate/late commands cannot commit twice | `rejects duplicate and late terminal commands and never commits twice` |
+| Accept/cancel and accept/expiry races have one winner | `gives accept-vs-cancel and accept-vs-expiry races exactly one winner` |
+| Compromised owner prevents post-consent commit | `prevents commit when the owner lock is compromised before acceptance` |
+| Registry removes terminal operations/rejects unknown IDs | `removes terminal workflows and rejects unknown operation IDs` |
+| Global serialization spans cross-call consent wait | `keeps a second workflow out of acquisition while the first awaits consent` |
+| No terminal timers/listeners and owner rejection observed | cancel/expiry tests assert zero scheduler handles; implementation attaches rejection observers to both owner and readiness promises |
+
+### 7B0 RED/GREEN evidence
+
+- RED: focused Vitest suite failed to import missing `./consent-lease-registry`.
+- GREEN: `npm test -- --run src/main/capabilities/consent-lease-registry.test.ts src/main/packages/package-lock.test.ts` — **2 files passed, 18 tests passed**.
+- Typecheck reached only the known unrelated renderer blocker at `CodingAgentSession.tsx:387` (`skillInvocations` missing from `Props`).
+
+
 ## Requirement → test coverage
 | Area | Test coverage |
 |---|---|

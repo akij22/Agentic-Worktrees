@@ -1,6 +1,7 @@
 import lockfile, { type LockOptions } from "proper-lockfile";
 
 export interface PackageLockAdapter { lock(path: string, options: LockOptions): Promise<() => Promise<void>> }
+export interface PackageLockOwner { assertHealthy(): void }
 interface PackageLockOptions {
 	retryMs?: number; timeoutMs?: number; adapter?: PackageLockAdapter;
 	/** Test-only timing override; proper-lockfile enforces a 2s minimum stale lease. */
@@ -12,7 +13,7 @@ const safeLockError = (cause: unknown) => new Error("Unable to acquire or mainta
 export class PackageLock {
 	private queue: Promise<void> = Promise.resolve();
 	constructor(private readonly lockPath: string, private readonly options: PackageLockOptions = {}) {}
-	async runExclusive<T>(task: () => Promise<T>): Promise<T> {
+	async runExclusive<T>(task: (owner: PackageLockOwner) => Promise<T>): Promise<T> {
 		const previous = this.queue; let releaseQueue!: () => void;
 		this.queue = new Promise<void>(resolve => { releaseQueue = resolve; }); await previous;
 		let release: (() => Promise<void>) | undefined;
@@ -28,8 +29,9 @@ export class PackageLock {
 					onCompromised: error => { compromiseError ??= safeLockError(error); },
 				});
 			} catch (error) { throw safeLockError(error); }
+			const owner: PackageLockOwner = { assertHealthy: () => { if (compromiseError) throw compromiseError; } };
 			let result: T | undefined; let callbackError: unknown; let callbackFailed = false;
-			try { result = await task(); } catch (error) { callbackFailed = true; callbackError = error; }
+			try { result = await task(owner); } catch (error) { callbackFailed = true; callbackError = error; }
 			if (callbackFailed) throw callbackError;
 			if (compromiseError) throw compromiseError;
 			return result as T;
