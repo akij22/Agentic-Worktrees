@@ -10,7 +10,10 @@ import type { ManagedPackageLayout } from "../packages/storage-layout";
 import type { CapabilityRepository, InstalledConfigurationSnapshot } from "./capability-repository";
 
 function isEnoent(error: unknown): boolean { return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT"; }
-function directorySyncUnsupported(error: unknown): boolean { return typeof error === "object" && error !== null && "code" in error && ["EINVAL", "ENOTSUP", "EISDIR"].includes(String(error.code)); }
+export function isUnsupportedDirectorySyncError(error: unknown, platform: NodeJS.Platform = process.platform): boolean {
+  if (platform !== "win32" || typeof error !== "object" || error === null || !("code" in error)) return false;
+  return ["EPERM", "EINVAL", "ENOTSUP", "EISDIR", "ENOSYS"].includes(String(error.code));
+}
 
 export interface InstallerFileSystem {
   mkdir(path: string, options: { recursive: true; mode: number }): Promise<unknown>;
@@ -20,9 +23,18 @@ export interface InstallerFileSystem {
   open(path: string, flags: string, mode?: number): Promise<FileHandle>;
   writeFile(path: string, data: string | Buffer, options?: { mode: number }): Promise<void>;
   rm(path: string, options: { force: true; recursive?: true }): Promise<void>;
+  syncDirectory(path: string): Promise<void>;
 }
 
-const realFileSystem: InstallerFileSystem = { mkdir, rename, readFile: (path) => readFile(path), stat, open, writeFile, rm };
+const realFileSystem: InstallerFileSystem = {
+  mkdir, rename, readFile: (path) => readFile(path), stat, open, writeFile, rm,
+  async syncDirectory(path) {
+    let handle: FileHandle | undefined;
+    try { handle = await open(path, "r"); await handle.sync(); }
+    catch (error) { if (!isUnsupportedDirectorySyncError(error)) throw error; }
+    finally { await handle?.close(); }
+  },
+};
 export interface InstallerHooks {
   verifyCommittedPath?: (path: string, expectedDigest: string) => Promise<void>;
   refreshCatalog?: () => Promise<void>;
@@ -54,7 +66,7 @@ export class CapabilityPackageInstaller {
       await fs.mkdir(this.layout.activeRoot, { recursive: true, mode: 0o700 });
       const file = await fs.open(temp, "w", 0o600); try { await file.writeFile(JSON.stringify(data)); await file.sync(); } finally { await file.close(); }
       await fs.rename(temp, pointer);
-      const directory = await fs.open(dirname(pointer), "r"); try { try { await directory.sync(); } catch (error) { if (!directorySyncUnsupported(error)) throw error; } } finally { await directory.close(); }
+      await fs.syncDirectory(dirname(pointer));
       const record = this.runInTransaction(() => { this.capabilityRepository.initializeInstalledConfiguration(inspected.descriptor.manifest, inspected.permissionDigest); return this.repository.commitInstallation(s.operationId, { packageName: s.packageName, itemKind: "capability", itemId: capabilityId, requestedSpec: s.requestedSpec, activeVersion: s.resolvedVersion, activeIntegrity: s.integrity, activeContentDigest: s.contentDigest, trust: inspected.trust, reviewStatus: inspected.reviewStatus, permissionDigest: inspected.permissionDigest, state: "installed" }); });
       await this.hooks.refreshCatalog?.(); return record;
     } catch (cause) {

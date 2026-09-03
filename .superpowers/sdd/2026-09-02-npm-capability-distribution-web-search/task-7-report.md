@@ -187,3 +187,19 @@ Blocked only by the pre-existing unrelated renderer diagnostic at CodingAgentSes
 $ npm run lint -- --no-fix ...
 Blocked before linting by duplicate eslint-plugin-import resolution between this worktree and the parent checkout.
 ```
+
+## Task 7A2 fix round 1
+
+Directory durability policy now belongs exclusively to the production filesystem adapter's `syncDirectory()` implementation. It closes any opened handle in `finally` and tolerates `EPERM`, `EINVAL`, `ENOTSUP`, `EISDIR`, and `ENOSYS` only on Windows. Installer orchestration treats every injected `syncDirectory()` rejection as fatal and compensates it.
+
+Each of the four deterministic publication-failure cases now begins from a real installed target and unrelated installation, overwrites the target pointer with distinctive prior bytes, retries through a new operation, and asserts exact pointer bytes, target managed/configuration/package-tree state, unrelated state, failed/installing operation, path-free error, and temp cleanup. A focused predicate test verifies Windows tolerated codes, a fatal Windows code, the same unsupported code on non-Windows, and an unstructured error.
+
+Verification after the fix:
+
+```text
+$ npm test -- --run src/main/capabilities/capability-package-installer.test.ts
+1 file passed; 27 tests passed.
+
+$ npm test -- --run src/main/capabilities/capability-package-installer.test.ts src/main/capabilities/installed-catalog.test.ts src/main/capabilities/capability-distribution-service.test.ts src/main/capabilities/capability-repository.test.ts
+4 files passed; 36 tests passed.
+```

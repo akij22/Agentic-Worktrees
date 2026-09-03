@@ -8,7 +8,7 @@ import { ManagedPackageRepository } from "../packages/package-repository";
 import { createManagedPackageLayout } from "../packages/storage-layout";
 import { digestPackageTree } from "../packages/content-digest";
 import { CapabilityRepository } from "./capability-repository";
-import { CapabilityPackageInstaller, type InstallerFileSystem } from "./capability-package-installer";
+import { CapabilityPackageInstaller, isUnsupportedDirectorySyncError, type InstallerFileSystem } from "./capability-package-installer";
 
 const roots: string[] = [];
 async function snapshotTree(root: string, relative = ""): Promise<Array<{ path: string; kind: "directory" | "file"; mode: number; bytes?: string }>> {
@@ -139,24 +139,35 @@ describe("CapabilityPackageInstaller real fixtures", () => {
   });
 
   for (const failure of ["write", "file-sync", "rename", "directory-sync"] as const) {
-    it(`durably compensates a deterministic pointer ${failure} failure`, async () => {
-      const f = await fixture(); const unrelated = await installUnrelated(f); const baseline = await snapshotInstalledFixture(unrelated);
-      const pointer = `${f.layout.activePointerPath(f.capabilityId)}.json`; const temp = `${pointer}.${process.pid}.tmp`; let renameCalls = 0; const native = await import("node:fs/promises");
+    it(`restores exact prior target state after deterministic pointer ${failure} failure`, async () => {
+      const f = await fixture(); const unrelated = await installUnrelated(f); const unrelatedBaseline = await snapshotInstalledFixture(unrelated);
+      await new CapabilityPackageInstaller(f.layout, f.repo, f.capabilities, (work) => f.db.transaction(work)()).commitFresh(f.inspected, { capabilityId: f.capabilityId, version: f.version, contentDigest: f.contentDigest, toolNames: [] });
+      const pointer = `${f.layout.activePointerPath(f.capabilityId)}.json`; const distinctivePointer = Buffer.from(`{\"prior\":\"${failure}-pointer-bytes\"}\n`); await writeFile(pointer, distinctivePointer);
+      const targetBaseline = { managed: f.repo.getByPackageName(f.packageName), configuration: f.capabilities.snapshotInstalledConfiguration(f.capabilityId), tree: await snapshotTree(f.layout.packageVersionRoot(f.capabilityId, f.version)) };
+      const attempt = await createTargetAttempt(f, `op-retry-${failure}`); const temp = `${pointer}.${process.pid}.tmp`; const native = await import("node:fs/promises");
       const fs: InstallerFileSystem = { mkdir: native.mkdir, readFile: (path) => native.readFile(path), stat: native.stat, writeFile: native.writeFile, rm: native.rm,
-        rename: async (from, to) => { renameCalls++; if (failure === "rename" && renameCalls === 2) throw new Error(`${f.root}/rename`); await native.rename(from, to); },
-        open: async (path, flags, mode) => { const handle = await native.open(path, flags, mode); const isDirectory = path === f.layout.activeRoot; return new Proxy(handle, { get(target, property) { if (property === "writeFile" && failure === "write") return async () => { throw new Error(`${f.root}/write`); }; if (property === "sync" && ((failure === "file-sync" && !isDirectory) || (failure === "directory-sync" && isDirectory))) return async () => { throw new Error(`${f.root}/sync`); }; const value = Reflect.get(target, property, target) as unknown; return typeof value === "function" ? value.bind(target) : value; } }) as never; },
+        rename: async (from, to) => { if (failure === "rename") throw new Error(`${f.root}/rename`); await native.rename(from, to); },
+        open: async (path, flags, mode) => { const handle = await native.open(path, flags, mode); return new Proxy(handle, { get(target, property) { if (property === "writeFile" && failure === "write") return async () => { throw new Error(`${f.root}/write`); }; if (property === "sync" && failure === "file-sync") return async () => { throw new Error(`${f.root}/sync`); }; const value = Reflect.get(target, property, target) as unknown; return typeof value === "function" ? value.bind(target) : value; } }) as never; },
+        syncDirectory: async () => { if (failure === "directory-sync") throw new Error(`${f.root}/directory-sync`); },
       };
-      let error: Error | undefined; try { await new CapabilityPackageInstaller(f.layout, f.repo, f.capabilities, (work) => f.db.transaction(work)(), { fs }).commitFresh(f.inspected, { capabilityId: f.capabilityId, version: f.version, contentDigest: f.contentDigest, toolNames: [] }); } catch (cause) { error = cause as Error; }
-      expect(error?.message).toBe("package_install_failed"); expect(error?.message).not.toContain(f.root); expect(f.repo.getByPackageName(f.packageName)).toBeUndefined(); expect(f.capabilities.getInstallation(f.capabilityId)).toBeUndefined(); expect(f.repo.snapshotOperation("op-1")).toMatchObject({ status: "failed", stage: "installing" });
-      await expect(access(pointer)).rejects.toMatchObject({ code: "ENOENT" }); await expect(access(temp)).rejects.toMatchObject({ code: "ENOENT" }); await expect(access(f.layout.packageVersionRoot(f.capabilityId, f.version))).rejects.toMatchObject({ code: "ENOENT" }); expect(await snapshotInstalledFixture(unrelated)).toEqual(baseline);
+      let error: Error | undefined; try { await new CapabilityPackageInstaller(f.layout, f.repo, f.capabilities, (work) => f.db.transaction(work)(), { fs }).commitFresh(attempt.inspected, { capabilityId: f.capabilityId, version: f.version, contentDigest: attempt.contentDigest, toolNames: [] }); } catch (cause) { error = cause as Error; }
+      expect(error?.message).toBe("package_install_failed"); expect(error?.message).not.toContain(f.root); expect(f.repo.getByPackageName(f.packageName)).toEqual(targetBaseline.managed); expect(f.capabilities.snapshotInstalledConfiguration(f.capabilityId)).toEqual(targetBaseline.configuration); expect(f.repo.snapshotOperation(`op-retry-${failure}`)).toMatchObject({ status: "failed", stage: "installing" });
+      expect(await readFile(pointer)).toEqual(distinctivePointer); await expect(access(temp)).rejects.toMatchObject({ code: "ENOENT" }); expect(await snapshotTree(f.layout.packageVersionRoot(f.capabilityId, f.version))).toEqual(targetBaseline.tree); expect(await snapshotInstalledFixture(unrelated)).toEqual(unrelatedBaseline);
     });
   }
 
   it("records invalid recovery evidence and logs a stable code when cleanup fails", async () => {
     const f = await fixture(); const native = await import("node:fs/promises"); const destination = f.layout.packageVersionRoot(f.capabilityId, f.version); const logs: string[] = []; let renameCalls = 0;
     const fs: InstallerFileSystem = { mkdir: native.mkdir, readFile: (path) => native.readFile(path), stat: native.stat, open: native.open, writeFile: native.writeFile,
-      rename: async (from, to) => { renameCalls++; if (renameCalls === 2) throw new Error(`${f.root}/rename`); await native.rename(from, to); }, rm: async (path, options) => { if (path === destination) throw new Error(`${f.root}/cleanup`); await native.rm(path, options); } };
+      rename: async (from, to) => { renameCalls++; if (renameCalls === 2) throw new Error(`${f.root}/rename`); await native.rename(from, to); }, rm: async (path, options) => { if (path === destination) throw new Error(`${f.root}/cleanup`); await native.rm(path, options); }, syncDirectory: async () => undefined };
     await expect(new CapabilityPackageInstaller(f.layout, f.repo, f.capabilities, (work) => f.db.transaction(work)(), { fs, logger: (code) => logs.push(code) }).commitFresh(f.inspected, { capabilityId: f.capabilityId, version: f.version, contentDigest: f.contentDigest, toolNames: [] })).rejects.toThrow("package_install_failed");
     expect(f.repo.getByPackageName(f.packageName)).toMatchObject({ state: "invalid", errorCode: "package_install_failed" }); expect(f.repo.snapshotOperation("op-1")).toMatchObject({ status: "failed", stage: "installing", errorCode: "package_install_failed" }); expect(logs).toEqual(["package_install_cleanup_failed"]); expect(JSON.stringify(logs)).not.toContain(f.root); await expect(access(destination)).resolves.toBeUndefined();
+  });
+
+  it("tolerates only documented Windows directory-sync unsupported codes", () => {
+    for (const code of ["EPERM", "EINVAL", "ENOTSUP", "EISDIR", "ENOSYS"]) expect(isUnsupportedDirectorySyncError({ code }, "win32")).toBe(true);
+    expect(isUnsupportedDirectorySyncError({ code: "EACCES" }, "win32")).toBe(false);
+    expect(isUnsupportedDirectorySyncError({ code: "ENOTSUP" }, "darwin")).toBe(false);
+    expect(isUnsupportedDirectorySyncError(new Error("raw"), "win32")).toBe(false);
   });
 });
