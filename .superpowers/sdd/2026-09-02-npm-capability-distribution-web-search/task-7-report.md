@@ -34,11 +34,14 @@ Result: **4 files passed, 10 tests passed**.
 | 3 | Verification precedes DB commit, then catalog refresh | `verifies committed path, commits DB, then refreshes catalog` order recorder |
 | 4 | Different-digest same-version collision is rejected without overwrite | `rejects a same-version collision with a different digest without overwrite` |
 | 5 | Identical same-version destination is safely reused without duplicate state | `reuses an identical same-version destination without duplicate state` |
-| 6 | Unrelated filesystem and DB state remains unchanged | `does not modify unrelated package directory, pointer, or DB record` |
+| 6 | Unrelated filesystem and stable DB state remains unchanged | `does not modify unrelated package directory, pointer, or stable DB record` |
 | 7 | Stable records contain no temporary or absolute package paths | `returns path-free stable records and DTOs` |
-| 8 | Defaults/consent readiness creates no session or activation | `initializes ready defaults without sessions or activation` |
+| 8 | Accepted permission defaults are ready with no session or activation | `initializes accepted permission defaults ready without sessions or activation` |
 
 Focused result: **8 tests passed**.
+
+### 7A1 fix round 1
+Added direct assertions for staged-source removal, a real unrelated stable installation record, and persistence of accepted permission digest/default configuration during commit. No activation dependency was added to the installer.
 
 ## Task 7A — installer and installed-catalog hardening
 
