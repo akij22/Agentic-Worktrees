@@ -150,6 +150,15 @@ export class ManagedPackageRepository {
 	deleteInstallation(packageName: string): void {
 		this.sqlite.transaction(() => { this.sqlite.prepare("DELETE FROM managed_package_installations WHERE package_name = ?").run(packageName); })();
 	}
+	restoreInstallation(packageName: string, record: ManagedPackageInstallationRecord | undefined): void {
+		this.sqlite.transaction(() => {
+			if (!record) { this.sqlite.prepare("DELETE FROM managed_package_installations WHERE package_name = ?").run(packageName); return; }
+			this.sqlite.prepare(`INSERT INTO managed_package_installations
+			(package_name,item_kind,item_id,requested_spec,active_version,active_integrity,active_content_digest,trust,review_status,accepted_permission_digest,state,error_code,created_at,updated_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(package_name) DO UPDATE SET item_kind=excluded.item_kind,item_id=excluded.item_id,requested_spec=excluded.requested_spec,active_version=excluded.active_version,active_integrity=excluded.active_integrity,active_content_digest=excluded.active_content_digest,trust=excluded.trust,review_status=excluded.review_status,accepted_permission_digest=excluded.accepted_permission_digest,state=excluded.state,error_code=excluded.error_code,created_at=excluded.created_at,updated_at=excluded.updated_at`)
+			.run(record.packageName, record.itemKind, record.itemId, record.requestedSpec, record.activeVersion ?? null, record.activeIntegrity ?? null, record.activeContentDigest ?? null, record.trust, record.reviewStatus, record.acceptedPermissionDigest ?? null, record.state, record.errorCode ?? null, record.createdAt.getTime(), record.updatedAt.getTime());
+		})();
+	}
 	listInterruptedOperations(): PackageOperationRecord[] {
 		return (this.sqlite.prepare(`${operationSelect} WHERE status IN ('in_progress','awaiting_consent') ORDER BY updated_at, operation_id`).all() as OperationRow[]).map(operationFromRow);
 	}

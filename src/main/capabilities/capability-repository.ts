@@ -130,6 +130,18 @@ export class CapabilityRepository {
     return record;
   }
 
+  restoreConfiguration(capabilityId: string, installation: CapabilityInstallationRecord | undefined, settings: readonly CapabilitySettingRecord[]): void {
+    this.sqlite.transaction(() => {
+      if (!installation) {
+        this.sqlite.prepare("DELETE FROM capability_installations WHERE capability_id = ?").run(capabilityId);
+        return;
+      }
+      this.sqlite.prepare(`INSERT INTO capability_installations (capability_id,version,permission_digest,configured,created_at,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(capability_id) DO UPDATE SET version=excluded.version,permission_digest=excluded.permission_digest,configured=excluded.configured,created_at=excluded.created_at,updated_at=excluded.updated_at`)
+        .run(installation.capabilityId, installation.version, installation.permissionDigest, installation.configured ? 1 : 0, installation.createdAt.getTime(), installation.updatedAt.getTime());
+      this.replaceSettingsWithinTransaction(capabilityId, settings);
+    })();
+  }
+
   getSettings(capabilityId: string): CapabilitySettingRecord[] {
     const rows = this.sqlite.prepare("SELECT key, value_json valueJson, secret_ref secretRef FROM capability_settings WHERE capability_id = ? ORDER BY key").all(capabilityId) as Array<{ key: string; valueJson: string | null; secretRef: string | null }>;
     return rows.map((row) => ({ key: row.key, ...(row.valueJson !== null ? { value: parseStoredSetting(row.valueJson) } : {}), ...(row.secretRef ? { secretRef: row.secretRef } : {}) }));

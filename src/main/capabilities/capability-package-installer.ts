@@ -1,4 +1,4 @@
-import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { InspectedCapabilityPackage } from "./package-inspector";
 import type { CapabilityExecutableVerification } from "./package-verifier";
@@ -17,6 +17,12 @@ export class CapabilityPackageInstaller {
     const pointer = this.layout.activePointerPath(inspected.descriptor.manifest.id) + ".json";
     await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
     const existing = await stat(destination).catch(() => undefined);
+    const moved = !existing;
+    const previousPointer = await readFile(pointer).catch(() => undefined);
+    const previousInstallation = this.repository.getByPackageName(s.packageName);
+    const capabilityApi = this.capabilityRepository as CapabilityRepository & { getInstallation?: CapabilityRepository["getInstallation"]; getSettings?: CapabilityRepository["getSettings"]; restoreConfiguration?: CapabilityRepository["restoreConfiguration"] };
+    const previousConfiguration = capabilityApi.getInstallation?.(inspected.descriptor.manifest.id);
+    const previousSettings = capabilityApi.getSettings?.(inspected.descriptor.manifest.id) ?? [];
     if (existing) {
       // Re-installing the exact immutable artifact is safe and idempotent.
       if ((await digestPackageTree(destination)) !== s.contentDigest) throw new Error("package_install_failed");
@@ -31,6 +37,17 @@ export class CapabilityPackageInstaller {
       const record = this.runInTransaction(() => { this.capabilityRepository.initializeInstalledConfiguration(inspected.descriptor.manifest, inspected.permissionDigest); return this.repository.commitInstallation(s.operationId, { packageName: s.packageName, itemKind: "capability", itemId: inspected.descriptor.manifest.id, requestedSpec: s.requestedSpec, activeVersion: s.resolvedVersion, activeIntegrity: s.integrity, activeContentDigest: s.contentDigest, trust: inspected.trust, reviewStatus: inspected.reviewStatus, permissionDigest: inspected.permissionDigest, state: "installed" }); });
       await this.hooks.refreshCatalog?.();
       return record;
-    } catch (error) { await rm(pointer, { force: true }).catch(() => undefined); await rm(destination, { recursive: true, force: true }).catch(() => undefined); throw error; }
+    } catch (error) {
+      // Catalog refresh is outside the DB transaction, so restore the complete
+      // pre-install state before making the operation retryable.
+      await this.runInTransaction(() => {
+        this.repository.restoreInstallation(s.packageName, previousInstallation);
+        capabilityApi.restoreConfiguration?.(inspected.descriptor.manifest.id, previousConfiguration, previousSettings);
+      });
+      if (previousPointer) await writeFile(pointer, previousPointer, { mode: 0o600 });
+      else await rm(pointer, { force: true }).catch(() => undefined);
+      if (moved) await rm(destination, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
   }
 }

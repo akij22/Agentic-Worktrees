@@ -68,3 +68,13 @@ $ npm run typecheck
 FAIL (pre-existing unrelated renderer diagnostic):
 CodingAgentSession.tsx:387 — Property 'skillInvocations' does not exist on type Props
 ```
+
+## 7A1 fix round 4
+| Requirement | Direct evidence |
+|---|---|
+| Same-connection transaction rollback | Installer tests inject `db.transaction(work)()` and verify initialization/commit failure removes managed/configuration state and filesystem artifacts. |
+| Catalog failure compensation | Installer snapshots prior pointer, managed installation, capability installation/settings and restores them in an explicit compensating transaction. |
+| Isolation | Real second installation fixture is retained byte-for-byte by target success/failure paths. |
+| Activation boundary | No activation claim; activation spies remain Task 7B. |
+
+Focused verification: `npm test -- --run src/main/capabilities/capability-package-installer.test.ts` — **1 file passed, 9 tests passed**.
