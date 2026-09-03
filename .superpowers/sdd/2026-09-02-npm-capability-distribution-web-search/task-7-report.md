@@ -209,3 +209,9 @@ $ npm test -- --run src/main/capabilities/capability-package-installer.test.ts
 $ npm test -- --run src/main/capabilities/capability-package-installer.test.ts src/main/capabilities/installed-catalog.test.ts src/main/capabilities/capability-distribution-service.test.ts src/main/capabilities/capability-repository.test.ts
 4 files passed; 36 tests passed.
 ```
+
+## Task 7A3 — installed catalog validation and immutable snapshots
+
+Catalog implementation now performs bounded, strict pointer and descriptor validation, canonical managed-layout checks, digest/permission verification, recursive freezing, and serialized refresh publication. Added real temporary-layout and in-memory SQLite catalog fixtures with 34 named tests covering valid lookup/order, immutable state, omission, malformed identity/path/filesystem categories, and prior snapshot preservation.
+
+Verification: `npm test -- --run src/main/capabilities/installed-catalog.test.ts` — **1 file passed, 34 tests passed**.

@@ -48,7 +48,7 @@ export class InstalledCapabilityCatalog {
         if (descriptor.manifest.id !== record.itemId || descriptor.manifest.version !== record.activeVersion || (record.acceptedPermissionDigest && permissionDigest(descriptor) !== record.acceptedPermissionDigest) || await digestPackageTree(root) !== record.activeContentDigest) throw new Error(FAIL);
         next.push(deepFreeze({ record: deepFreeze({ ...record }), descriptor: deepFreeze(descriptor), manifestRelativePath: p.manifestPath, entryRelativePath: p.entryPath }));
       }
-    } catch { throw new Error(FAIL); }
+    } catch (cause) { throw new Error(FAIL, { cause }); }
     next.sort((a,b) => a.record.itemId.localeCompare(b.record.itemId) || (a.record.activeVersion ?? "").localeCompare(b.record.activeVersion ?? "")); this.snapshot = deepFreeze(next);
   }
 }
