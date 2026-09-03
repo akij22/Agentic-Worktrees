@@ -245,6 +245,7 @@ export class CapabilityDistributionService {
         });
         return Object.freeze(dto);
       },
+      onCancel: () => controller.abort(new Error("package_cancelled")),
       accept: async (payload, staged, owner) => {
         if (
           !inspectedForAccept ||
@@ -261,6 +262,7 @@ export class CapabilityDistributionService {
         } catch {
           throw new Error("package_busy");
         }
+        owner.setPhase?.("verifying");
         let verification;
         try {
           verification = await this.deps.verifier.verify(
@@ -275,6 +277,13 @@ export class CapabilityDistributionService {
         } catch {
           throw new Error("package_busy");
         }
+        if (verification.capabilityId !== found.descriptor.manifest.id ||
+            verification.version !== found.descriptor.manifest.version ||
+            verification.contentDigest !== found.staged.contentDigest ||
+            verification.toolNames.length !== found.descriptor.tools.length ||
+            verification.toolNames.some((name, index) => name !== found.descriptor.tools[index]?.name))
+          throw new Error("package_verification_failed");
+        owner.setPhase?.("committing");
         let record;
         try {
           record = await this.installer.commitFresh(found, verification);

@@ -3,8 +3,10 @@ import {
   type PackageErrorCode,
 } from "../../shared/packages/schemas";
 
+export type ConsentLeasePhase = "pending" | "verifying" | "committing";
 export interface PackageLockOwner {
   assertHealthy(): void;
+  setPhase?(phase: ConsentLeasePhase): void;
 }
 export interface ExclusivePackageLock {
   runExclusive<T>(task: (owner: PackageLockOwner) => Promise<T>): Promise<T>;
@@ -40,6 +42,7 @@ interface StartOptions<Acquired, Inspection, Payload, Result> {
   ): Promise<Result>;
   terminal?(outcome: ConsentLeaseTerminalOutcome): void | Promise<void>;
   cleanup(): Promise<void>;
+  onCancel?(): void;
 }
 interface RegistryOptions {
   lock: ExclusivePackageLock;
@@ -111,6 +114,8 @@ export class ConsentLeaseRegistry {
     const ready = deferred<Readonly<Inspection>>(),
       command = deferred<Command<Payload>>();
     let commandChosen = false,
+      cancelRequested = false,
+      phase: ConsentLeasePhase = "pending",
       timer: unknown,
       entered = false;
     let resolveAccept: ((result: Result) => void) | undefined,
@@ -118,6 +123,13 @@ export class ConsentLeaseRegistry {
     let resolveCancel: (() => void) | undefined,
       rejectCancel: ((error: unknown) => void) | undefined;
     const choose = (next: Command<Payload>) => {
+      if (next.kind === "cancel") {
+        if (phase === "committing" || (commandChosen && phase === "pending")) throw safeError("package_busy");
+        cancelRequested = true;
+        options.onCancel?.();
+        if (!commandChosen) { commandChosen = true; command.resolve(next); }
+        return;
+      }
       if (commandChosen) throw safeError("package_busy");
       commandChosen = true;
       command.resolve(next);
@@ -178,7 +190,7 @@ export class ConsentLeaseRegistry {
             const result = await options.accept(
               selected.payload,
               acquired,
-              owner,
+              { ...owner, setPhase: (next) => { phase = next; owner.setPhase?.(next); } },
             );
             outcome = freeze({ reason: "completed" });
             return result;
@@ -190,7 +202,10 @@ export class ConsentLeaseRegistry {
             error instanceof LeaseError
               ? error
               : safeError("package_install_failed");
-          if (outcome.reason !== "expired")
+          if (cancelRequested) {
+            outcome = freeze({ reason: "cancelled" as const, code: "package_permission_denied" as const });
+            throw safeError("package_permission_denied");
+          } else if (outcome.reason !== "expired")
             outcome = freeze({ reason: "failed", code: safe.code });
           throw safe;
         } finally {
