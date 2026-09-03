@@ -1,12 +1,13 @@
 import type Database from 'better-sqlite3';
 import { getSqlite } from './client';
-import { bootstrapSchemaSql } from './bootstrap';
+import { bootstrapSchemaSql, managedPackageSchemaStatements } from './bootstrap';
 
 type TableInfoRow = {
   name: string;
 };
 
 export const applyDatabaseUpgrades = (sqlite: Database.Database): void => {
+	sqlite.exec(managedPackageSchemaStatements.join(";\n"));
 	const worktreeColumns = sqlite
 		.prepare("PRAGMA table_info(worktrees)")
 		.all() as TableInfoRow[];

@@ -1,6 +1,31 @@
 import { z } from "zod";
 import type { Repository, Worktree } from "../db/schema";
 import { codingAgentTurnRequestSchema, skillDetailSchema, skillIdSchema, skillSummarySchema } from "../skills/schemas";
+import {
+	capabilityInstallationStateSchema,
+	packageInspectRequestSchema,
+	packageInstallRequestSchema,
+	packageUpdateRequestSchema,
+	packageRemoveRequestSchema,
+	capabilityUpdateSchema,
+	capabilityDistributionProgressSchema,
+} from "../packages/schemas";
+export {
+	packageInspectRequestSchema,
+	packageInstallRequestSchema,
+	packageUpdateRequestSchema,
+	packageRemoveRequestSchema,
+	capabilityUpdateSchema,
+	capabilityDistributionProgressSchema,
+};
+export type {
+	PackageInspectRequest,
+	PackageInstallRequest,
+	PackageUpdateRequest,
+	PackageRemoveRequest,
+	CapabilityUpdateDto,
+	CapabilityDistributionProgress,
+} from "../packages/schemas";
 
 export const githubAuthStateSchema = z.enum([
 	"loading",
@@ -877,6 +902,11 @@ export const capabilitySummarySchema = z.object({
 	compatibility: capabilityCompatibilitySchema,
 	state: capabilityStateSchema,
 	secretConfigured: z.boolean(),
+	installationState: capabilityInstallationStateSchema,
+	source: z.enum(["bundled", "npm"]),
+	packageName: z.string().optional(),
+	trust: z.enum(["built-in", "official", "community"]),
+	reviewStatus: z.enum(["bundled-reviewed", "official-reviewed", "unreviewed"]),
 });
 export type CapabilitySummaryDto = z.infer<typeof capabilitySummarySchema>;
 
@@ -917,7 +947,7 @@ export const capabilityDetailSchema = capabilitySummarySchema.extend({
 	}).optional(),
 	permissions: z.object({ network: z.array(z.string()), secrets: z.array(z.string()) }),
 	settings: z.array(capabilitySettingDetailSchema),
-	reviewStatus: z.literal("bundled-reviewed"),
+	activeRunCount: z.number().int().nonnegative(),
 	providedTools: z.array(z.string()),
 	permissionDigest: z.string(),
 	warningCode: z.enum(["upstream_unavailable"]).optional(),

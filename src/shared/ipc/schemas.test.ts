@@ -28,6 +28,8 @@ import {
 	skillInstallRequestSchema,
 	skillRemoveRequestSchema,
 	marketplaceItemSchema,
+	packageInspectRequestSchema,
+	packageRemoveRequestSchema,
 } from "./schemas";
 
 describe("GitHub authentication IPC schemas", () => {
@@ -482,6 +484,27 @@ describe("workspace IPC schemas", () => {
 });
 
 
+describe("package lifecycle IPC schemas", () => {
+	it("strips local paths from inspection requests", () => {
+		expect(packageInspectRequestSchema.parse({
+			sourceSpec: "@agentic-worktrees/web-search@0.1.0",
+			officialCapabilityId: "agentic-worktrees.web-search",
+			archivePath: "/must/not/cross/ipc",
+		})).toEqual({
+			sourceSpec: "@agentic-worktrees/web-search@0.1.0",
+			officialCapabilityId: "agentic-worktrees.web-search",
+		});
+	});
+
+	it("rejects unknown removal request fields", () => {
+		expect(packageRemoveRequestSchema.parse({
+			packageName: "@agentic-worktrees/web-search",
+			acceptedActiveRunCount: 2,
+			installDirectory: "/private/path",
+		})).not.toHaveProperty("installDirectory");
+	});
+});
+
 describe("capability IPC schemas", () => {
 	it("validates activation and keyless configuration requests", () => {
 		expect(capabilityActivateRequestSchema.parse({ runId: "run-1", capabilityId: "agentic-worktrees.web-search" })).toEqual({ runId: "run-1", capabilityId: "agentic-worktrees.web-search" });
@@ -506,7 +529,7 @@ describe("capability IPC schemas", () => {
 	});
 
 	it("strips private fields from capability details", () => {
-		const parsed = capabilityDetailSchema.parse({ id: "agentic-worktrees.web-search", name: "Web Search", version: "0.1.0", description: "Search", category: "web-browser", compatibility: { codex: "supported", opencode: "supported" }, state: "ready", secretConfigured: false, sdkVersion: "^0.1.0", author: { name: "Agentic Worktrees" }, license: "MIT", permissions: { network: [], secrets: [] }, settings: [], reviewStatus: "bundled-reviewed", providedTools: ["web_search"], permissionDigest: "digest", bearerToken: "private" });
+		const parsed = capabilityDetailSchema.parse({ id: "agentic-worktrees.web-search", name: "Web Search", version: "0.1.0", description: "Search", category: "web-browser", compatibility: { codex: "supported", opencode: "supported" }, state: "ready", secretConfigured: false, installationState: "installed", source: "bundled", trust: "built-in", activeRunCount: 0, sdkVersion: "^0.1.0", author: { name: "Agentic Worktrees" }, license: "MIT", permissions: { network: [], secrets: [] }, settings: [], reviewStatus: "bundled-reviewed", providedTools: ["web_search"], permissionDigest: "digest", bearerToken: "private" });
 		expect(parsed).not.toHaveProperty("bearerToken");
 	});
 });

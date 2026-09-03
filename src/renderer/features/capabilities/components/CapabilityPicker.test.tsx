@@ -7,8 +7,8 @@ import type { CapabilityDetailDto, CapabilitySummaryDto } from "../../../../shar
 import { CapabilityPicker } from "./CapabilityPicker";
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
-const summary = (state: CapabilitySummaryDto["state"], compatibility: CapabilitySummaryDto["compatibility"] = { codex: "supported", opencode: "supported" }): CapabilitySummaryDto => ({ id: `cap-${state}`, name: `Web Search ${state}`, version: "0.1.0", description: "Search", category: "web-browser", compatibility, state, secretConfigured: false });
-const detail: CapabilityDetailDto = { ...summary("needs_setup"), sdkVersion: "^0.1.0", author: { name: "Agentic Worktrees" }, license: "MIT", permissions: { network: ["mcp.exa.ai"], secrets: [] }, settings: [], reviewStatus: "bundled-reviewed", providedTools: ["web_search"], permissionDigest: "digest" };
+const summary = (state: CapabilitySummaryDto["state"], compatibility: CapabilitySummaryDto["compatibility"] = { codex: "supported", opencode: "supported" }): CapabilitySummaryDto => ({ id: `cap-${state}`, name: `Web Search ${state}`, version: "0.1.0", description: "Search", category: "web-browser", compatibility, state, secretConfigured: false, installationState: "installed", source: "bundled", trust: "built-in", reviewStatus: "bundled-reviewed" });
+const detail: CapabilityDetailDto = { ...summary("needs_setup"), sdkVersion: "^0.1.0", author: { name: "Agentic Worktrees" }, license: "MIT", permissions: { network: ["mcp.exa.ai"], secrets: [] }, settings: [], reviewStatus: "bundled-reviewed", activeRunCount: 0, providedTools: ["web_search"], permissionDigest: "digest" };
 
 function renderPicker(capabilities: CapabilitySummaryDto[], onActivate = vi.fn().mockResolvedValue({}), onDeactivate = vi.fn().mockResolvedValue({})) {
   render(<MemoryRouter><CapabilityPicker runId="run-1" agentKind="codex" capabilities={capabilities} onActivate={onActivate} onDeactivate={onDeactivate} /></MemoryRouter>);
