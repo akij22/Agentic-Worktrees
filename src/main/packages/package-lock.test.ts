@@ -33,9 +33,19 @@ describe("PackageLock", () => {
 		const lock = new PackageLock("/managed/lock", { adapter }); await lock.runExclusive(async () => undefined); expect(firstRelease).toHaveBeenCalledOnce(); expect(secondRelease).not.toHaveBeenCalled();
 		await lock.runExclusive(async () => undefined); expect(firstRelease).toHaveBeenCalledOnce(); expect(secondRelease).toHaveBeenCalledOnce();
 	});
-	it("maps lease compromise and still invokes owner release", async () => {
-		const release = vi.fn(async () => undefined); const gate = deferred();
-		const adapter: PackageLockAdapter = { lock: vi.fn(async (_path, options) => { queueMicrotask(() => options.onCompromised(new Error("lost"))); return release; }) };
-		await expect(new PackageLock("/managed/lock", { adapter }).runExclusive(() => gate.promise)).rejects.toThrow("package lock"); expect(release).toHaveBeenCalledOnce();
+	it("holds the local queue until a compromised callback settles", async () => {
+		const release = vi.fn(async () => undefined), gate = deferred(), entered = deferred(); let compromise!: (error: Error) => void; const order: string[] = [];
+		const adapter: PackageLockAdapter = { lock: vi.fn(async (_path, options) => { compromise = options.onCompromised; return release; }) }; const lock = new PackageLock("/managed/lock", { adapter });
+		const first = lock.runExclusive(async () => { order.push("first-enter"); entered.resolve(); await gate.promise; order.push("first-exit"); }); await entered.promise; compromise(new Error("lost"));
+		const second = lock.runExclusive(async () => { order.push("second-enter"); }); await new Promise<void>(resolve => setImmediate(resolve)); expect(order).toEqual(["first-enter"]); expect(release).not.toHaveBeenCalled();
+		gate.resolve(); await expect(first).rejects.toThrow("package lock"); await second; expect(order).toEqual(["first-enter", "first-exit", "second-enter"]); expect(release).toHaveBeenCalledTimes(2);
 	});
+	it("keeps a real long-lived owner through heartbeat renewal", async () => {
+		const path = join(await mkdtemp(join(tmpdir(), "lock-")), "global"); const held = deferred();
+		const owner = new PackageLock(path, { staleMs: 2_000, updateMs: 1_000, retryMs: 10, timeoutMs: 5_000 });
+		const ownerRun = owner.runExclusive(async () => { held.resolve(); await new Promise(resolve => setTimeout(resolve, 2_500)); }); await held.promise;
+		const contender = new PackageLock(path, { staleMs: 2_000, updateMs: 1_000, retryMs: 10, timeoutMs: 250 });
+		await expect(contender.runExclusive(async () => "stolen")).rejects.toThrow("package lock"); await ownerRun;
+		await expect(contender.runExclusive(async () => "acquired")).resolves.toBe("acquired");
+	}, 7_000);
 });
