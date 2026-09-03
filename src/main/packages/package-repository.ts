@@ -148,6 +148,21 @@ export class ManagedPackageRepository {
 	failOperation(operationId: string, code: PackageErrorCode): PackageOperationRecord {
 		return this.finishOperation(operationId, "failed", code);
 	}
+	/**
+	 * Compensates only the operation that was proven to belong to this install attempt.
+	 * The immutable snapshot prevents a partially acquired journal from targeting an
+	 * unrelated operation after an identity collision.
+	 */
+	compensateFailedInstall(operationSnapshot: PackageOperationRecord, expected: { operationId: string; packageName: string; requestedSpec: string }, code: PackageErrorCode): PackageOperationRecord {
+		if (operationSnapshot.operationId !== expected.operationId || operationSnapshot.packageName !== expected.packageName || operationSnapshot.requestedSpec !== expected.requestedSpec || operationSnapshot.action !== "install") {
+			throw new Error("Managed package operation identity mismatch.");
+		}
+		const current = this.snapshotOperation(expected.operationId);
+		if (!current || current.packageName !== operationSnapshot.packageName || current.requestedSpec !== operationSnapshot.requestedSpec || current.action !== operationSnapshot.action) {
+			throw new Error("Managed package operation identity changed.");
+		}
+		return this.failOperationCoherently(expected.operationId, code);
+	}
 	/** Marks an attempted install failed even when its installation row was already committed. */
 	failOperationCoherently(operationId: string, code: PackageErrorCode): PackageOperationRecord {
 		return this.sqlite.transaction(() => {

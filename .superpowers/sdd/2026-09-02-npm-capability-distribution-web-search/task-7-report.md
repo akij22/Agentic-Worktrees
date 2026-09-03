@@ -107,3 +107,33 @@ CodingAgentSession.tsx:387 — Property 'skillInvocations' does not exist on typ
 | Activation boundary | No activation claim; activation spies remain Task 7B. |
 
 Focused verification: `npm test -- --run src/main/capabilities/capability-package-installer.test.ts` — **1 file passed, 9 tests passed**.
+
+## Task 7A1R fix round 2
+
+Snapshot acquisition is now an explicit read-only phase guarded by `snapshotsComplete`. Optional filesystem reads suppress only `ENOENT`; all other filesystem and repository snapshot failures become safe, path-free install failures without target compensation. Once the full journal exists, compensation uses the captured operation through the identity-validating `compensateFailedInstall` repository API, restores exact configuration/managed/pointer state, and removes only attempt-owned filesystem content.
+
+### Direct installer tests (18)
+1. `moves a successful staged package to the exact version directory`
+2. `writes an atomic active pointer with exact identity and relative paths`
+3. `verifies committed path, commits DB, then refreshes catalog`
+4. `rejects a same-version collision with a different digest without overwrite`
+5. `reuses an identical same-version destination without duplicate state`
+6. `does not modify unrelated package directory, pointer, or DB record`
+7. `returns path-free stable records and DTOs`
+8. `rolls back package state when configuration initialization fails`
+9. `initializes accepted permission defaults ready without sessions or activation`
+10. `rolls back settings operation pointer destination temp and sessions when managed commit throws`
+11. `compensates a fresh catalog refresh failure to exact absence`
+12. `restores prior managed configuration settings and pointer bytes after catalog failure`
+13. `preserves a pre-existing identical destination when a later refresh fails`
+14. `removes orphan settings when restoring an absent prior capability`
+15. `keeps the exact baseline when compensation is invoked twice`
+16. `preserves a complete recursively snapshotted unrelated real installation across target failure`
+17. `does not mutate target state when operation repository snapshot fails`
+18. `propagates non-ENOENT pointer reads as a safe path-free failure without target mutation`
+
+### Verification
+- Focused installer: **1 file passed, 18 tests passed**.
+- All four Task 7 files: **4 files passed, 27 tests passed**.
+- `npm run typecheck`: Task 7A1R files pass; blocked only by the known unrelated `CodingAgentSession.tsx:387` missing `skillInvocations` prop diagnostic.
+- `npm run lint -- --no-fix`: blocked by duplicate `eslint-plugin-import` resolution between the worktree and parent checkout.
