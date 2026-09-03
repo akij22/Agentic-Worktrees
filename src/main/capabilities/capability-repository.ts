@@ -103,6 +103,12 @@ export class CapabilityRepository {
     return record;
   }
 
+  initializeInstalledConfiguration(manifest: { id: string; version: string; settings?: Record<string, { default?: CapabilitySettingValue; required?: boolean; type?: string }> }, permissionDigest: string): CapabilityInstallationRecord {
+    const settings = Object.entries(manifest.settings ?? {}).map(([key, value]) => ({ key, ...(value.default !== undefined ? { value: value.default } : {}) }));
+    const configured = Object.entries(manifest.settings ?? {}).every(([, value]) => value.type === "secret" ? !value.required : !value.required || value.default !== undefined);
+    return this.saveConfiguration({ capabilityId: manifest.id, version: manifest.version, permissionDigest, configured }, settings);
+  }
+
   replaceSettings(capabilityId: string, settings: readonly CapabilitySettingRecord[]): CapabilitySettingRecord[] {
     return this.sqlite.transaction(() => this.replaceSettingsWithinTransaction(capabilityId, settings))();
   }
