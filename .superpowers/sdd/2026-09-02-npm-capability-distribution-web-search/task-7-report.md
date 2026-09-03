@@ -25,3 +25,26 @@ Result: **4 files passed, 10 tests passed**.
 ## Commits
 - `0f40db5 feat(capabilities): install verified npm packages atomically`
 - `a1a2155 test(capabilities): cover transactional npm installation`
+
+## Task 7A — installer and installed-catalog hardening
+
+| Requirement | Test/evidence |
+|---|---|
+| Verified content is checked after move and before DB commit | `capability-package-installer.ts`: digest verification and injected `verifyCommittedPath` hook precede `commitInstallation` |
+| Atomic active pointer and rollback on pointer/DB errors | installer writes sibling temp then renames; catch removes pointer and destination |
+| Collision fails closed | destination existence is rejected before rename |
+| Path-free installation records | returned record is repository DTO and contains no filesystem paths |
+| Immutable catalog and deterministic ordering | `installed-catalog.ts`: frozen entries/snapshot and stable item/version sort |
+| Catalog fail-closed validation | refresh validates pointer metadata, managed paths, files, descriptor identity/permission digest, and on-disk tree digest; snapshot assignment occurs only after full success |
+| Previous snapshot preservation | refresh builds `next` locally and assigns only after validation completes |
+
+Exact evidence:
+
+```text
+$ npm test -- src/main/capabilities/capability-package-installer.test.ts src/main/capabilities/installed-catalog.test.ts src/main/capabilities/capability-distribution-service.test.ts src/main/capabilities/capability-repository.test.ts
+4 files passed (4); 10 tests passed (10)
+
+$ npm run typecheck
+FAIL (pre-existing unrelated renderer diagnostic):
+CodingAgentSession.tsx:387 — Property 'skillInvocations' does not exist on type Props
+```
