@@ -18,6 +18,14 @@ describe("CapabilityRepository", () => {
   });
   afterEach(() => sqlite.close());
 
+  it("initializes defaults and marks required configuration accurately", () => {
+    const ready = repository.initializeInstalledConfiguration({ id: "agentic-worktrees.web-search", version: "0.1.0", settings: { resultLimit: { type: "integer", required: true, default: 5 }, apiKey: { type: "secret", required: false } } }, "digest");
+    expect(ready.configured).toBe(true);
+    expect(repository.getSettings(ready.capabilityId)).toEqual([{ key: "apiKey" }, { key: "resultLimit", value: 5 }]);
+    const setup = repository.initializeInstalledConfiguration({ id: "agentic-worktrees.other", version: "1.0.0", settings: { token: { type: "secret", required: true } } }, "other-digest");
+    expect(setup.configured).toBe(false);
+  });
+
   it("persists installation and settings in one transaction", () => {
     const installation = { capabilityId: "agentic-worktrees.web-search", version: "0.1.0", permissionDigest: "digest", configured: true };
     repository.saveConfiguration(installation, [{ key: "resultLimit", value: 5 }, { key: "exaApiKey", secretRef: "opaque" }]);

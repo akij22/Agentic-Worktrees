@@ -8,7 +8,7 @@ import { ManagedPackageRepository } from "../packages/package-repository";
 export interface InstalledCapabilityEntry { record: ManagedPackageInstallationRecord; descriptor: CapabilityStaticDescriptor; manifestRelativePath: string; entryRelativePath: string }
 interface Pointer { packageName: string; version: string; integrity: string; digest: string; manifestPath: string; entryPath: string }
 export class InstalledCapabilityCatalog {
-  private snapshot: readonly InstalledCapabilityEntry[] = [];
+  private snapshot: readonly InstalledCapabilityEntry[] = Object.freeze([]);
   constructor(private readonly layout: ManagedPackageLayout, private readonly repository = new ManagedPackageRepository(), private readonly descriptors = new Map<string, CapabilityStaticDescriptor>()) {}
   list(): readonly InstalledCapabilityEntry[] { return this.snapshot }
   get(capabilityId: string, version?: string) { return this.snapshot.find(x => x.record.itemId === capabilityId && (!version || x.record.activeVersion === version)); }
