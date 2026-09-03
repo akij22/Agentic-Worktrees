@@ -212,6 +212,24 @@ $ npm test -- --run src/main/capabilities/capability-package-installer.test.ts s
 
 ## Task 7A3 — installed catalog validation and immutable snapshots
 
-Catalog implementation now performs bounded, strict pointer and descriptor validation, canonical managed-layout checks, digest/permission verification, recursive freezing, and serialized refresh publication. Added real temporary-layout and in-memory SQLite catalog fixtures with 34 named tests covering valid lookup/order, immutable state, omission, malformed identity/path/filesystem categories, and prior snapshot preservation.
+Catalog implementation uses the Task 6 containment-safe bounded file-handle reader for 64 KiB pointers and 256 KiB manifests, reuses the canonical `permissionDigest`, validates root/manifest/entry identity around two package-tree digest passes, and publishes only complete recursively frozen snapshots through a serialized refresh queue.
 
-Verification: `npm test -- --run src/main/capabilities/installed-catalog.test.ts` — **1 file passed, 34 tests passed**.
+### Direct installed-catalog tests (39)
+
+- Baseline/valid behavior (4): `starts with an immutable empty snapshot`; `loads multiple real entries in deterministic ID/version order and performs exact lookup`; `publishes recursively immutable entries, records, descriptors, arrays, and nested objects`; `serializes controlled concurrent refreshes so the newest invocation publishes last`.
+- Omission (3 parameterized cases): `omits incompatible managed records without touching their files`; `omits migration_pending managed records without touching their files`; `omits invalid managed records without touching their files`.
+- Pointer/schema/identity rejection (11): `rejects missing pointer ...`; `malformed pointer JSON`; `oversized pointer`; `unknown pointer field`; `missing pointer field`; `legacy pointer digest alias`; and `packageName`, `capabilityId`, `version`, `integrity`, and `contentDigest identity mismatch`.
+- Path rejection (6): `rejects absolute POSIX manifest path ...`; `Windows drive entry path`; `Windows UNC entry path`; `traversal manifest path`; `backslash separator ambiguity`; `NUL path`.
+- Filesystem rejection (9): `rejects pointer symlink ...`; `package-root symlink`; `manifest symlink`; `entry symlink`; `non-file entry`; `missing package root`; `missing manifest`; `missing entry`; `oversized manifest`.
+- Descriptor/digest/permission rejection (5): `rejects invalid static descriptor ...`; `descriptor capability ID mismatch`; `descriptor version mismatch`; `package tree tamper`; `accepted permission digest mismatch`.
+- Check/use race (1): `rejects an entry replacement between digest passes without publishing partial state`.
+
+Every named rejection fixture executes a real mutation and asserts that mutation before refresh. Every rejection also asserts exact path-free `package_install_failed`, prior snapshot object identity, and unchanged deep snapshot content.
+
+### Verification
+
+- Focused catalog: `npm test -- --run src/main/capabilities/installed-catalog.test.ts` — **1 file passed, 39 tests passed**.
+- All four Task 7 suites: `npm test -- --run src/main/capabilities/capability-package-installer.test.ts src/main/capabilities/installed-catalog.test.ts src/main/capabilities/capability-distribution-service.test.ts src/main/capabilities/capability-repository.test.ts` — **4 files passed, 74 tests passed**.
+- Task 6 inspector regression suite: **1 file passed, 20 tests passed**.
+- `npm run typecheck`: Task 7A3 files pass; blocked only by the pre-existing renderer diagnostic at `CodingAgentSession.tsx:387` (`skillInvocations` is not a `Props` member).
+- `npm run lint -- --no-fix ...`: blocked before linting by duplicate `eslint-plugin-import` resolution between this worktree and the parent checkout.

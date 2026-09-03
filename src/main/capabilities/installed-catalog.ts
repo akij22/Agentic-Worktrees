@@ -1,54 +1,62 @@
-import { createHash } from "node:crypto";
-import { lstat, open, realpath } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { validateCapabilityStaticDescriptor, type CapabilityStaticDescriptor } from "@agentic-worktrees/capability-sdk";
 import type { ManagedPackageInstallationRecord } from "../../shared/packages/schemas";
 import type { ManagedPackageLayout } from "../packages/storage-layout";
 import { ManagedPackageRepository } from "../packages/package-repository";
 import { digestPackageTree } from "../packages/content-digest";
+import { readContainedJson } from "../packages/bounded-file-reader";
+import { permissionDigest } from "./catalog";
 
 export interface InstalledCapabilityEntry { record: ManagedPackageInstallationRecord; descriptor: CapabilityStaticDescriptor; manifestRelativePath: string; entryRelativePath: string }
-const MAX_METADATA = 256 * 1024;
-const FAIL = "package_install_failed";
+export interface InstalledCatalogTestHooks { afterFirstDigest?: (record: ManagedPackageInstallationRecord) => Promise<void> }
+const POINTER_MAX_BYTES = 64 * 1024; const MANIFEST_MAX_BYTES = 256 * 1024; const FAIL = "package_install_failed";
 interface Pointer { packageName: string; capabilityId: string; version: string; integrity: string; contentDigest: string; manifestPath: string; entryPath: string }
-function deepFreeze<T>(v: T): T { if (v && typeof v === "object" && !Object.isFrozen(v)) { Object.freeze(v); for (const child of Object.values(v as Record<string, unknown>)) deepFreeze(child); } return v; }
-function relativePath(value: unknown): value is string { return typeof value === "string" && value.length > 0 && !value.includes("\0") && !isAbsolute(value) && !/^[A-Za-z]:[\\/]/.test(value) && !value.startsWith("\\\\") && !value.replace(/\\/g, "/").split("/").includes("..") && !value.includes("\\"); }
-async function boundedJson(path: string, root: string): Promise<unknown> {
-  const rootReal = await realpath(root); const before = await lstat(path);
-  if (!before.isFile() || before.isSymbolicLink() || before.size > MAX_METADATA) throw new Error(FAIL);
-  const canonical = await realpath(path); const rel = relative(rootReal, canonical);
-  if (!rel || rel.startsWith("..") || isAbsolute(rel)) throw new Error(FAIL);
-  const h = await open(path, "r"); try { const s = await h.stat(); if (s.size > MAX_METADATA) throw new Error(FAIL); const b = Buffer.alloc(MAX_METADATA + 1); let n = 0; while (n < b.length) { const r = await h.read(b, n, b.length-n, n); if (!r.bytesRead) break; n += r.bytesRead; } if (n > MAX_METADATA) throw new Error(FAIL); return JSON.parse(b.subarray(0,n).toString()); } finally { await h.close(); }
+const POINTER_FIELDS = ["capabilityId", "contentDigest", "entryPath", "integrity", "manifestPath", "packageName", "version"];
+function deepFreeze<T>(value: T): T { if (value && typeof value === "object" && !Object.isFrozen(value)) { Object.freeze(value); for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child); } return value; }
+function safeRelativePath(value: unknown): value is string { return typeof value === "string" && value.length > 0 && !value.includes("\0") && !isAbsolute(value) && !/^[A-Za-z]:[\\/]/.test(value) && !value.startsWith("\\\\") && !value.replace(/\\/g, "/").split("/").includes("..") && !value.includes("\\"); }
+function contained(root: string, candidate: string): boolean { const rel = relative(root, candidate); return !!rel && !rel.startsWith("..") && !isAbsolute(rel); }
+function sameNode(left: Stats, right: Stats, directory: boolean): boolean { return (directory ? left.isDirectory() && right.isDirectory() : left.isFile() && right.isFile()) && !left.isSymbolicLink() && !right.isSymbolicLink() && left.dev === right.dev && left.ino === right.ino; }
+async function checkedNode(path: string, managedRoot: string, directory: boolean): Promise<{ stat: Stats; real: string }> {
+  const stat = await lstat(path); if (!sameNode(stat, stat, directory)) throw new Error(FAIL);
+  const real = await realpath(path); const rootReal = await realpath(managedRoot); if (!contained(rootReal, real) || real !== resolve(path)) throw new Error(FAIL);
+  return { stat, real };
 }
-function permissionDigest(d: CapabilityStaticDescriptor): string { return createHash("sha256").update(JSON.stringify({ permissions: d.manifest.permissions, version: d.manifest.version })).digest("hex"); }
+function pointer(value: unknown): Pointer {
+  if (!value || typeof value !== "object" || Array.isArray(value) || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(POINTER_FIELDS)) throw new Error(FAIL);
+  const candidate = value as Record<string, unknown>;
+  if (!["packageName", "capabilityId", "version", "integrity", "contentDigest"].every(key => typeof candidate[key] === "string" && candidate[key] !== "") || !safeRelativePath(candidate.manifestPath) || !safeRelativePath(candidate.entryPath)) throw new Error(FAIL);
+  return candidate as unknown as Pointer;
+}
 
 export class InstalledCapabilityCatalog {
-  private snapshot: readonly InstalledCapabilityEntry[] = Object.freeze([]);
-  private refreshQueue: Promise<void> = Promise.resolve();
-  constructor(private readonly layout: ManagedPackageLayout, private readonly repository = new ManagedPackageRepository()) {}
+  private snapshot: readonly InstalledCapabilityEntry[] = Object.freeze([]); private refreshQueue: Promise<void> = Promise.resolve();
+  constructor(private readonly layout: ManagedPackageLayout, private readonly repository = new ManagedPackageRepository(), private readonly hooks: InstalledCatalogTestHooks = {}) {}
   list(): readonly InstalledCapabilityEntry[] { return this.snapshot; }
-  get(capabilityId: string, version?: string): InstalledCapabilityEntry | undefined { return this.snapshot.find(x => x.record.itemId === capabilityId && (version === undefined || x.record.activeVersion === version)); }
+  get(capabilityId: string, version?: string): InstalledCapabilityEntry | undefined { return this.snapshot.find(entry => entry.record.itemId === capabilityId && (version === undefined || entry.record.activeVersion === version)); }
   refresh(): Promise<void> { const run = this.refreshQueue.then(() => this.refreshNow()); this.refreshQueue = run.catch(() => undefined); return run; }
   private async refreshNow(): Promise<void> {
     const next: InstalledCapabilityEntry[] = [];
     try {
       for (const record of this.repository.list("capability")) {
         if (record.state !== "installed" || !record.activeVersion || !record.activeIntegrity || !record.activeContentDigest) continue;
-        const pointerFile = `${this.layout.activePointerPath(record.itemId)}.json`;
-        const raw = await boundedJson(pointerFile, this.layout.root);
-        if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(FAIL);
-        const keys = Object.keys(raw).sort(); const expected = ["capabilityId","contentDigest","entryPath","integrity","manifestPath","packageName","version"].sort();
-        if (JSON.stringify(keys) !== JSON.stringify(expected)) throw new Error(FAIL);
-        const p = raw as Pointer;
-        if (p.capabilityId !== record.itemId || p.packageName !== record.packageName || p.version !== record.activeVersion || p.integrity !== record.activeIntegrity || p.contentDigest !== record.activeContentDigest || !relativePath(p.manifestPath) || !relativePath(p.entryPath)) throw new Error(FAIL);
-        const root = this.layout.packageVersionRoot(record.itemId, record.activeVersion); const rootReal = await realpath(root); if (rootReal !== root) throw new Error(FAIL);
-        const manifest = resolve(root, p.manifestPath), entry = resolve(root, p.entryPath); this.layout.assertManagedPath(manifest); this.layout.assertManagedPath(entry);
-        const entryStat = await lstat(entry); if (!entryStat.isFile() || entryStat.isSymbolicLink()) throw new Error(FAIL);
-        const descriptor = validateCapabilityStaticDescriptor(await boundedJson(manifest, root));
-        if (descriptor.manifest.id !== record.itemId || descriptor.manifest.version !== record.activeVersion || (record.acceptedPermissionDigest && permissionDigest(descriptor) !== record.acceptedPermissionDigest) || await digestPackageTree(root) !== record.activeContentDigest) throw new Error(FAIL);
-        next.push(deepFreeze({ record: deepFreeze({ ...record }), descriptor: deepFreeze(descriptor), manifestRelativePath: p.manifestPath, entryRelativePath: p.entryPath }));
+        const pointerPath = `${this.layout.activePointerPath(record.itemId)}.json`;
+        const activePointer = pointer(await readContainedJson(this.layout.root, pointerPath, POINTER_MAX_BYTES));
+        if (activePointer.packageName !== record.packageName || activePointer.capabilityId !== record.itemId || activePointer.version !== record.activeVersion || activePointer.integrity !== record.activeIntegrity || activePointer.contentDigest !== record.activeContentDigest) throw new Error(FAIL);
+        const packageRoot = this.layout.packageVersionRoot(record.itemId, record.activeVersion); const rootBefore = await checkedNode(packageRoot, this.layout.root, true);
+        const manifestPath = resolve(packageRoot, activePointer.manifestPath), entryPath = resolve(packageRoot, activePointer.entryPath);
+        if (!contained(packageRoot, manifestPath) || !contained(packageRoot, entryPath)) throw new Error(FAIL);
+        const manifestBefore = await checkedNode(manifestPath, packageRoot, false); const entryBefore = await checkedNode(entryPath, packageRoot, false);
+        const firstDigest = await digestPackageTree(packageRoot); await this.hooks.afterFirstDigest?.(record);
+        const descriptor = validateCapabilityStaticDescriptor(await readContainedJson(packageRoot, manifestPath, MANIFEST_MAX_BYTES));
+        const secondDigest = await digestPackageTree(packageRoot);
+        const rootAfter = await checkedNode(packageRoot, this.layout.root, true), manifestAfter = await checkedNode(manifestPath, packageRoot, false), entryAfter = await checkedNode(entryPath, packageRoot, false);
+        if (!sameNode(rootBefore.stat, rootAfter.stat, true) || rootBefore.real !== rootAfter.real || !sameNode(manifestBefore.stat, manifestAfter.stat, false) || manifestBefore.real !== manifestAfter.real || !sameNode(entryBefore.stat, entryAfter.stat, false) || entryBefore.real !== entryAfter.real || firstDigest !== secondDigest || secondDigest !== record.activeContentDigest || secondDigest !== activePointer.contentDigest || descriptor.manifest.id !== record.itemId || descriptor.manifest.version !== record.activeVersion || (record.acceptedPermissionDigest && permissionDigest(descriptor.manifest) !== record.acceptedPermissionDigest)) throw new Error(FAIL);
+        next.push(deepFreeze({ record: deepFreeze({ ...record }), descriptor: deepFreeze(descriptor), manifestRelativePath: activePointer.manifestPath, entryRelativePath: activePointer.entryPath }));
       }
+      next.sort((left, right) => Buffer.compare(Buffer.from(left.record.itemId), Buffer.from(right.record.itemId)) || Buffer.compare(Buffer.from(left.record.activeVersion ?? ""), Buffer.from(right.record.activeVersion ?? "")));
+      this.snapshot = deepFreeze(next);
     } catch (cause) { throw new Error(FAIL, { cause }); }
-    next.sort((a,b) => a.record.itemId.localeCompare(b.record.itemId) || (a.record.activeVersion ?? "").localeCompare(b.record.activeVersion ?? "")); this.snapshot = deepFreeze(next);
   }
 }
