@@ -276,3 +276,32 @@ Every named rejection fixture executes a real mutation and asserts that mutation
 - Task 6 inspector regression suite: **1 file passed, 20 tests passed**.
 - `npm run typecheck`: Task 7A3 files pass; blocked only by the pre-existing renderer diagnostic at `CodingAgentSession.tsx:387` (`skillInvocations` is not a `Props` member).
 - `npm run lint -- --no-fix ...`: blocked before linting by duplicate `eslint-plugin-import` resolution between this worktree and the parent checkout.
+
+## Task 7B1 fix round 1 — coherent shared-code consent lifecycle
+
+`LeaseError.code` is now a runtime-validated `PackageErrorCode`. The registry publishes one immutable terminal outcome (`completed`, `cancelled`, `expired`, or `failed`) before owned staging cleanup. The service consumes that outcome to persist cancellation/failure and publish schema-valid progress. Lock loss maps to `package_busy`, expiry/cancel to `package_permission_denied`, unknown static-inspection failures to `package_manifest_invalid`, and unknown accept failures to `package_install_failed`; valid shared codes are preserved.
+
+The accept callback receives its lock owner. The service asserts health immediately before executable verification and again immediately after verification before installer commit. `CapabilityRepository` is retained independently of installer injection and is the source of projected configured state.
+
+### Direct service tests (14)
+1. `inspects a Community package statically and holds its only lock`
+2. `inspects an exact Official catalog package without downgrading trust`
+3. `fails unknown Official lookup specifically as package_not_found`
+4. `preserves Official identity mismatch as package_manifest_invalid`
+5. `rejects invalid input before lock, operation, or acquisition`
+6. `blocks an existing package name collision coherently`
+7. `blocks an existing Capability ID collision coherently`
+8. `records acquisition failure and cleans with a safe shared code`
+9. `records static inspection failure and cleans with package_manifest_invalid`
+10. `installs in verify-then-commit order, completes, cleans, releases, and creates no session`
+11. `uses configured repository state with a custom installer`
+12. `detects compromise after verifier and skips installer`
+13. `isolates throwing listeners and unsubscribe prevents later delivery`
+14. `keeps a second inspect out of acquisition while the first awaits consent`
+
+Lease coverage is now **15 direct tests**, including `delivers one typed terminal outcome before cleanup` and `passes the same healthy owner to the accept callback`.
+
+### Verification
+- Focused service + lease + PackageLock: **3 files passed; 36 tests passed**.
+- Task 7 service, lease, lock, installer, catalog, and repositories: **7 files passed; 115 tests passed**.
+- `npm run typecheck`: changed Task 7 files typecheck; command remains blocked only by the pre-existing renderer `CodingAgentSession.tsx:387` missing `skillInvocations` prop diagnostic.
