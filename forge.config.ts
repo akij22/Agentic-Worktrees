@@ -37,6 +37,11 @@ const config: ForgeConfig = {
           target: 'main',
         },
         {
+          entry: 'src/main/capabilities/package-verifier-entry.ts',
+          config: 'vite.capability-verifier.config.ts',
+          target: 'main',
+        },
+        {
           entry: 'src/preload.ts',
           config: 'vite.preload.config.ts',
           target: 'preload',
