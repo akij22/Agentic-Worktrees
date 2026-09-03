@@ -20,9 +20,8 @@ export class CapabilityPackageInstaller {
     const moved = !existing;
     const previousPointer = await readFile(pointer).catch(() => undefined);
     const previousInstallation = this.repository.getByPackageName(s.packageName);
-    const capabilityApi = this.capabilityRepository as CapabilityRepository & { getInstallation?: CapabilityRepository["getInstallation"]; getSettings?: CapabilityRepository["getSettings"]; restoreConfiguration?: CapabilityRepository["restoreConfiguration"] };
-    const previousConfiguration = capabilityApi.getInstallation?.(inspected.descriptor.manifest.id);
-    const previousSettings = capabilityApi.getSettings?.(inspected.descriptor.manifest.id) ?? [];
+    const capabilityApi = this.capabilityRepository as CapabilityRepository & { snapshotInstalledConfiguration?: CapabilityRepository["snapshotInstalledConfiguration"]; restoreInstalledConfiguration?: CapabilityRepository["restoreInstalledConfiguration"] };
+    const previousConfiguration = capabilityApi.snapshotInstalledConfiguration?.(inspected.descriptor.manifest.id);
     if (existing) {
       // Re-installing the exact immutable artifact is safe and idempotent.
       if ((await digestPackageTree(destination)) !== s.contentDigest) throw new Error("package_install_failed");
@@ -42,10 +41,13 @@ export class CapabilityPackageInstaller {
       // pre-install state before making the operation retryable.
       await this.runInTransaction(() => {
         this.repository.restoreInstallation(s.packageName, previousInstallation);
-        capabilityApi.restoreConfiguration?.(inspected.descriptor.manifest.id, previousConfiguration, previousSettings);
+        if (previousConfiguration && capabilityApi.restoreInstalledConfiguration) capabilityApi.restoreInstalledConfiguration(previousConfiguration);
+        else if (capabilityApi.restoreInstalledConfiguration) capabilityApi.restoreInstalledConfiguration({ capabilityId: inspected.descriptor.manifest.id, installation: undefined, settings: [] });
+        this.repository.failOperationCoherently(s.operationId, "package_install_failed");
       });
       if (previousPointer) await writeFile(pointer, previousPointer, { mode: 0o600 });
       else await rm(pointer, { force: true }).catch(() => undefined);
+      await rm(`${pointer}.${process.pid}.tmp`, { force: true }).catch(() => undefined);
       if (moved) await rm(destination, { recursive: true, force: true }).catch(() => undefined);
       throw error;
     }

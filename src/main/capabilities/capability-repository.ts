@@ -24,6 +24,12 @@ export interface CapabilitySettingRecord {
   secretRef?: string;
 }
 
+export interface InstalledConfigurationSnapshot {
+  readonly capabilityId: string;
+  readonly installation: CapabilityInstallationRecord | undefined;
+  readonly settings: readonly CapabilitySettingRecord[];
+}
+
 export interface SessionCapabilityRecord {
   id: string;
   runId: string;
@@ -130,8 +136,17 @@ export class CapabilityRepository {
     return record;
   }
 
+  snapshotInstalledConfiguration(capabilityId: string): InstalledConfigurationSnapshot {
+    return Object.freeze({ capabilityId, installation: this.getInstallation(capabilityId), settings: Object.freeze(this.getSettings(capabilityId).map((setting) => Object.freeze({ ...setting }))) });
+  }
+
+  restoreInstalledConfiguration(snapshot: InstalledConfigurationSnapshot): void {
+    this.restoreConfiguration(snapshot.capabilityId, snapshot.installation, snapshot.settings);
+  }
+
   restoreConfiguration(capabilityId: string, installation: CapabilityInstallationRecord | undefined, settings: readonly CapabilitySettingRecord[]): void {
     this.sqlite.transaction(() => {
+      this.sqlite.prepare("DELETE FROM capability_settings WHERE capability_id = ?").run(capabilityId);
       if (!installation) {
         this.sqlite.prepare("DELETE FROM capability_installations WHERE capability_id = ?").run(capabilityId);
         return;

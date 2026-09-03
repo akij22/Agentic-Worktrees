@@ -46,6 +46,35 @@ Added direct assertions for staged-source removal, a real unrelated stable insta
 ### 7A1 fix round 2
 Staged removal now checks ENOENT via access; isolation snapshots a stable installation record; configuration initialization is invoked from commitFresh and failure rollback is asserted. No activation dependency is introduced; explicit activation spies remain a 7B service concern.
 
+## Task 7A1R — journaled atomic installer reset
+
+### Architecture
+- `CapabilityPackageInstaller` snapshots target capability configuration and managed installation before mutation, verifies committed content before the same-connection outer transaction, and performs catalog compensation with ownership-aware filesystem cleanup.
+- `CapabilityRepository.snapshotInstalledConfiguration()` / `restoreInstalledConfiguration()` are narrow immutable snapshot APIs; restore deletes settings first, including orphan settings when installation was absent.
+- `ManagedPackageRepository.failOperationCoherently()` transitions an attempted operation to stable `failed/installing` state after either transactional or catalog failure.
+- Pointer bytes are restored exactly (or removed), temporary pointer files are cleaned, and only destinations moved by this attempt are removed.
+
+### Requirement → test map (A–H)
+| Gate | Evidence |
+|---|---|
+| A | installer rollback test: configuration/managed failure leaves target rows and owned filesystem absent; operation failed |
+| B | installer compensation path snapshots/restores target DB and pointer state on catalog refresh failure |
+| C | identical pre-existing destination is reused and never removed |
+| D | repository restore explicitly deletes settings before absent-installation restore |
+| E | restore APIs and filesystem cleanup are idempotent (`force`/exact upsert-delete semantics) |
+| F | installer isolation fixture preserves unrelated package/pointer/record bytes |
+| G | committed digest and injected verification ordering precede DB and catalog; source is ENOENT; records are path-free |
+| H | all four Task 7 test files pass together |
+
+### Verification evidence
+```text
+$ npm test -- --run src/main/capabilities/capability-package-installer.test.ts src/main/capabilities/installed-catalog.test.ts src/main/capabilities/capability-distribution-service.test.ts src/main/capabilities/capability-repository.test.ts
+4 files passed; 18 tests passed
+
+$ npm run typecheck
+FAIL: pre-existing renderer diagnostic CodingAgentSession.tsx:387 (skillInvocations missing from Props)
+```
+
 ## Task 7A — installer and installed-catalog hardening
 
 | Requirement | Test/evidence |

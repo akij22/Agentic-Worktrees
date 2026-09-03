@@ -144,6 +144,15 @@ export class ManagedPackageRepository {
 	failOperation(operationId: string, code: PackageErrorCode): PackageOperationRecord {
 		return this.finishOperation(operationId, "failed", code);
 	}
+	/** Marks an attempted install failed even when its installation row was already committed. */
+	failOperationCoherently(operationId: string, code: PackageErrorCode): PackageOperationRecord {
+		return this.sqlite.transaction(() => {
+			this.requireOperation(operationId);
+			this.sqlite.prepare("UPDATE managed_package_operations SET status='failed', stage='installing', error_code=?, updated_at=? WHERE operation_id=?")
+				.run(code, Date.now(), operationId);
+			return this.requireOperation(operationId);
+		})();
+	}
 	cancelOperation(operationId: string): PackageOperationRecord {
 		return this.finishOperation(operationId, "cancelled");
 	}
