@@ -24,11 +24,13 @@ All terminal paths clear the timer, release the owner-bound lock, and remove the
 | Accept verifies/commits before release and returns result | `accepts once, commits inside the owner callback, cleans once, and releases afterward` |
 | Cancel skips callback, cleans once, releases, clears timer | `cancel skips commit, cleans once, releases, and clears its timer` |
 | Exact deterministic 15-minute expiry | `expires deterministically after exactly 15 minutes without commit` |
-| Static acquisition/inspection failure is safe and cleaned | `maps acquisition/inspection failure to a stable path-free error and cleans owned staging once` |
-| Lock acquisition failure does not clean unowned staging | `maps lock acquisition failure without cleaning an unowned staging path` |
+| Acquisition failure is safe and cleaned | `maps acquisition failure to a fully sanitized error and cleans owned staging once` |
+| Static inspection failure after acquisition is safe and cleaned | `sanitizes a static inspection failure after acquisition and releases all owned resources` |
+| Lock acquisition failure does not clean unowned staging | `maps lock acquisition failure without cleaning an unowned staging path or retaining its cause` |
 | Duplicate/late commands cannot commit twice | `rejects duplicate and late terminal commands and never commits twice` |
 | Accept/cancel and accept/expiry races have one winner | `gives accept-vs-cancel and accept-vs-expiry races exactly one winner` |
 | Compromised owner prevents post-consent commit | `prevents commit when the owner lock is compromised before acceptance` |
+| Commit failure exposes no raw cause, secret, or path | `sanitizes commit failures without exposing their cause` |
 | Registry removes terminal operations/rejects unknown IDs | `removes terminal workflows and rejects unknown operation IDs` |
 | Global serialization spans cross-call consent wait | `keeps a second workflow out of acquisition while the first awaits consent` |
 | No terminal timers/listeners and owner rejection observed | cancel/expiry tests assert zero scheduler handles; implementation attaches rejection observers to both owner and readiness promises |
@@ -36,7 +38,8 @@ All terminal paths clear the timer, release the owner-bound lock, and remove the
 ### 7B0 RED/GREEN evidence
 
 - RED: focused Vitest suite failed to import missing `./consent-lease-registry`.
-- GREEN: `npm test -- --run src/main/capabilities/consent-lease-registry.test.ts src/main/packages/package-lock.test.ts` — **2 files passed, 18 tests passed**.
+- GREEN (fix round 1): `npm test -- --run src/main/capabilities/consent-lease-registry.test.ts src/main/packages/package-lock.test.ts` — **2 files passed, 20 tests passed**.
+- `LeaseError` owns only stable `name`, `message`, and `code` data (plus the runtime-created local stack); raw causes are never retained. Acquisition, static-inspection, lock, and commit tests inspect `Reflect.ownKeys`, `.cause`, stack, JSON, and all reflected values for injected secrets and paths.
 - Typecheck reached only the known unrelated renderer blocker at `CodingAgentSession.tsx:387` (`skillInvocations` missing from `Props`).
 
 

@@ -35,8 +35,11 @@ interface RegistryOptions {
 }
 
 type Command<Payload> = { kind: "accept"; payload: Payload } | { kind: "cancel" } | { kind: "expiry" };
-class LeaseError extends Error {}
-const safeError = (code: string, cause?: unknown) => new LeaseError(code, cause === undefined ? undefined : { cause });
+export class LeaseError extends Error {
+  readonly code: string;
+  constructor(code: string) { super(code); this.name = "LeaseError"; this.code = code; }
+}
+const safeError = (code: string) => new LeaseError(code);
 const freeze = <T>(value: T): Readonly<T> => {
   if (value !== null && typeof value === "object") {
     for (const child of Object.values(value as Record<string, unknown>)) freeze(child);
@@ -60,7 +63,7 @@ export class ConsentLeaseRegistry {
   start<Acquired, Inspection, Payload, Result>(options: StartOptions<Acquired, Inspection, Payload, Result>): ConsentLease<Inspection, Payload, Result> {
     if (this.workflows.has(options.operationId)) throw safeError("package_operation_exists");
     const ready = deferred<Readonly<Inspection>>(), command = deferred<Command<Payload>>();
-    let commandChosen = false, enteredOwner = false, timer: unknown;
+    let commandChosen = false, timer: unknown;
     let resolveAccept: ((result: Result) => void) | undefined, rejectAccept: ((error: unknown) => void) | undefined;
     let resolveCancel: (() => void) | undefined, rejectCancel: ((error: unknown) => void) | undefined;
 
@@ -70,7 +73,6 @@ export class ConsentLeaseRegistry {
     };
 
     const ownerTask = this.options.lock.runExclusive(async owner => {
-      enteredOwner = true;
       let acquired: Acquired | undefined;
       try {
         try {
@@ -78,19 +80,21 @@ export class ConsentLeaseRegistry {
           const inspection = freeze(options.inspect(acquired, freeze({ expiresAt: this.options.clock() + this.timeoutMs })));
           ready.resolve(inspection);
         }
-        catch (error) { const safe = safeError("package_inspection_failed", error); ready.reject(safe); throw safe; }
+        catch { const safe = safeError("package_inspection_failed"); ready.reject(safe); throw safe; }
         timer = this.options.scheduler.setTimeout(() => { if (!commandChosen) { commandChosen = true; command.resolve({ kind: "expiry" }); } }, this.timeoutMs);
         const selected = await command.promise;
         if (selected.kind === "cancel") return undefined;
         if (selected.kind === "expiry") throw safeError("package_consent_expired");
-        try { owner.assertHealthy(); return await options.accept(selected.payload, acquired); }
-        catch (error) { if (error instanceof LeaseError) throw error; throw safeError("package_lock_failed", error); }
+        try { owner.assertHealthy(); }
+        catch { throw safeError("package_lock_failed"); }
+        try { return await options.accept(selected.payload, acquired); }
+        catch { throw safeError("package_commit_failed"); }
       } finally {
         if (timer !== undefined) this.options.scheduler.clearTimeout(timer);
         await options.cleanup();
       }
     }).catch(error => {
-      const safe = error instanceof LeaseError ? error : safeError(enteredOwner ? "package_lock_failed" : "package_lock_failed", error);
+      const safe = error instanceof LeaseError ? error : safeError("package_lock_failed");
       ready.reject(safe);
       throw safe;
     });
