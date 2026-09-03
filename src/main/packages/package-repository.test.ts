@@ -67,6 +67,15 @@ describe("ManagedPackageRepository", () => {
 		expect(repository.list()).toHaveLength(1);
 	});
 
+	it("rejects reusing a package name for a different item atomically", () => {
+		repository.beginOperation({ operationId: "first", action: "install", stage: "installing", packageName: migration.packageName, requestedSpec: migration.requestedSpec });
+		const original = repository.commitInstallation("first", stable);
+		repository.beginOperation({ operationId: "inverse-collision", action: "install", stage: "installing", packageName: migration.packageName, requestedSpec: migration.requestedSpec });
+		expect(() => repository.commitInstallation("inverse-collision", { ...stable, itemId: "agentic-worktrees.other", activeVersion: "9.0.0" })).toThrow();
+		expect(repository.getByPackageName(migration.packageName)).toEqual(original);
+		expect(repository.listInterruptedOperations()).toMatchObject([{ operationId: "inverse-collision", status: "in_progress" }]);
+	});
+
 	it("records failed and cancelled operations and lists only interruptions", () => {
 		repository.beginOperation({ operationId: "failed", action: "inspect", stage: "resolving", requestedSpec: migration.requestedSpec });
 		repository.beginOperation({ operationId: "cancelled", action: "install", stage: "downloading", requestedSpec: migration.requestedSpec });

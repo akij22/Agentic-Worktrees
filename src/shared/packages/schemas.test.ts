@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	capabilityPackageInspectionSchema,
 	packageErrorCodeSchema,
 	packageInstallRequestSchema,
 	packageOperationRecordSchema,
@@ -25,6 +26,29 @@ describe("package lifecycle schemas", () => {
 			acceptedPermissionDigest: "permission-digest",
 			executablePath: "/must/not/cross/ipc",
 		})).not.toHaveProperty("executablePath");
+	});
+
+	it("validates path-free package inspections with capability details", () => {
+		const parsed = capabilityPackageInspectionSchema.parse({
+			inspectionId: "inspection-1", packageName: "@agentic-worktrees/web-search",
+			requestedSpec: "@agentic-worktrees/web-search@0.1.0", resolvedVersion: "0.1.0",
+			integrity: "sha512-value", contentDigest: "content-digest", trust: "official",
+			reviewStatus: "official-reviewed", releaseNotes: "Initial release",
+			capability: {
+				id: "agentic-worktrees.web-search", name: "Web Search", version: "0.1.0",
+				description: "Search", category: "web-browser", compatibility: { codex: "supported", opencode: "supported" },
+				state: "available", secretConfigured: false, installationState: "available", source: "npm",
+				packageName: "@agentic-worktrees/web-search", trust: "official", reviewStatus: "official-reviewed",
+				sdkVersion: "^0.1.0", author: { name: "Agentic Worktrees" }, license: "MIT",
+				permissions: { network: [], secrets: [] }, settings: [], activeRunCount: 0,
+				providedTools: ["web_search"], permissionDigest: "permission-digest",
+				entryPath: "/must/not/cross-ipc",
+			},
+			permissionDigest: "permission-digest", expiresAt: "2026-09-03T00:00:00.000Z",
+			archivePath: "/must/not/cross-ipc",
+		});
+		expect(parsed).not.toHaveProperty("archivePath");
+		expect(parsed.capability).not.toHaveProperty("entryPath");
 	});
 
 	it("defines stable safe errors and operation state", () => {

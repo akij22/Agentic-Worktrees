@@ -123,6 +123,10 @@ export class ManagedPackageRepository {
 	commitInstallation(operationId: string, input: StableInstallationInput): ManagedPackageInstallationRecord {
 		return this.sqlite.transaction(() => {
 			this.requireMutableOperation(operationId);
+			const existing = this.getByPackageName(input.packageName);
+			if (existing && (existing.itemKind !== input.itemKind || existing.itemId !== input.itemId)) {
+				throw new Error("Managed package identity conflicts with the existing installation.");
+			}
 			const now = Date.now();
 			this.sqlite.prepare(`INSERT INTO managed_package_installations
 				(package_name,item_kind,item_id,requested_spec,active_version,active_integrity,active_content_digest,trust,review_status,accepted_permission_digest,state,error_code,created_at,updated_at)

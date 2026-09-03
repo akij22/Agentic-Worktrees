@@ -1,5 +1,10 @@
 import { z } from "zod";
-import type { CapabilityDetailDto } from "../ipc/schemas";
+import {
+	capabilityDetailSchema,
+	capabilityInstallationStateSchema,
+} from "../capabilities/schemas";
+export { capabilityInstallationStateSchema } from "../capabilities/schemas";
+export type { CapabilityInstallationStateDto } from "../capabilities/schemas";
 
 export const packageItemKindSchema = z.enum(["capability", "skill"]);
 export type PackageItemKind = z.infer<typeof packageItemKindSchema>;
@@ -51,12 +56,6 @@ export const packageOperationRecordSchema = z.object({
 });
 export type PackageOperationRecord = z.infer<typeof packageOperationRecordSchema>;
 
-export const capabilityInstallationStateSchema = z.enum([
-	"available", "installing", "installed", "needs_setup", "update_available", "updating",
-	"incompatible", "blocked", "invalid", "removing", "migration_pending",
-]);
-export type CapabilityInstallationStateDto = z.infer<typeof capabilityInstallationStateSchema>;
-
 export const packageInspectRequestSchema = z.object({ sourceSpec: packageSourceSpecSchema, officialCapabilityId: nonEmptyString.optional() });
 export type PackageInspectRequest = z.infer<typeof packageInspectRequestSchema>;
 export const packageInstallRequestSchema = z.object({
@@ -84,17 +83,18 @@ export const capabilityDistributionProgressSchema = z.object({
 });
 export type CapabilityDistributionProgress = z.infer<typeof capabilityDistributionProgressSchema>;
 
-export interface CapabilityPackageInspectionDto {
-	inspectionId: string;
-	packageName: string;
-	requestedSpec: string;
-	resolvedVersion: string;
-	integrity: string;
-	contentDigest: string;
-	trust: PackageTrust;
-	reviewStatus: PackageReviewStatus;
-	releaseNotes: string;
-	capability: CapabilityDetailDto;
-	permissionDigest: string;
-	expiresAt: string;
-}
+export const capabilityPackageInspectionSchema = z.object({
+	inspectionId: nonEmptyString,
+	packageName: packageNameSchema,
+	requestedSpec: packageSourceSpecSchema,
+	resolvedVersion: nonEmptyString,
+	integrity: nonEmptyString,
+	contentDigest: nonEmptyString,
+	trust: packageTrustSchema,
+	reviewStatus: packageReviewStatusSchema,
+	releaseNotes: z.string(),
+	capability: capabilityDetailSchema,
+	permissionDigest: nonEmptyString,
+	expiresAt: z.string().datetime(),
+});
+export type CapabilityPackageInspectionDto = z.infer<typeof capabilityPackageInspectionSchema>;
