@@ -283,6 +283,8 @@ export class CapabilityDistributionService {
         } catch (error) {
           throw coded(error, "package_verification_failed");
         }
+        if (controller.signal.aborted)
+          throw new Error("package_permission_denied");
         try {
           owner.assertHealthy();
         } catch {

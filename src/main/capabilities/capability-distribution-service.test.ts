@@ -713,6 +713,51 @@ describe("CapabilityDistributionService direct consent integration", () => {
     expect(f.discard).toHaveBeenCalledOnce();
   });
 
+  it("never commits when an abort-ignoring verifier resolves after cancellation", async () => {
+    let resolveVerification!: (value: {
+      capabilityId: string;
+      version: string;
+      contentDigest: string;
+      toolNames: string[];
+    }) => void;
+    const verification = new Promise<{
+      capabilityId: string;
+      version: string;
+      contentDigest: string;
+      toolNames: string[];
+    }>((resolve) => {
+      resolveVerification = resolve;
+    });
+    const events: unknown[] = [];
+    const f = setup({ verify: async () => verification });
+    f.service.subscribe((event) => events.push(event));
+    const inspection = await f.service.inspect({
+      sourceSpec: staged.requestedSpec,
+    });
+    const installing = f.service.install(consent(inspection));
+    await Promise.resolve();
+    const cancellation = f.service.cancel(inspection.inspectionId);
+    resolveVerification({
+      capabilityId: "example.search",
+      version: "1.2.3",
+      contentDigest: "digest-safe",
+      toolNames: ["search"],
+    });
+    await expect(installing).rejects.toThrow("package_permission_denied");
+    await expect(cancellation).resolves.toBeUndefined();
+    expect(f.installer).not.toHaveBeenCalled();
+    expect(
+      f.repository.snapshotOperation(inspection.inspectionId),
+    ).toMatchObject({ status: "cancelled" });
+    expect(
+      capabilityDistributionProgressSchema.parse(events.at(-1)),
+    ).toMatchObject({
+      status: "cancelled",
+    });
+    expect(f.discard).toHaveBeenCalledOnce();
+    expect(f.lock).toMatchObject({ held: false, releases: 1 });
+  });
+
   it.each([
     ["required secret", "apiKey", { type: "secret", required: true }],
     ["required non-secret", "endpoint", { type: "string", required: true }],

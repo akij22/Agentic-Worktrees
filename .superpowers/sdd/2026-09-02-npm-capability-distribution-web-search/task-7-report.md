@@ -373,3 +373,17 @@ passed.
 $ npx prettier --check <four changed TypeScript files>
 passed.
 ```
+
+## Task 7B2 review fix — abort-ignoring verifier commit gate
+
+The service now checks its owned operation `AbortSignal` immediately after executable verification resolves and before lock-health revalidation, the `committing` phase transition, or installer invocation. An abort maps to `package_permission_denied`; the lease therefore publishes the coherent cancelled terminal outcome even when a verifier ignores abort and resolves normally.
+
+Direct deterministic coverage: `never commits when an abort-ignoring verifier resolves after cancellation` holds verification on a deferred promise, cancels while verification is active, then resolves a valid verifier result. It asserts no installer call, cancelled DB state and schema-valid event, exactly-once staging cleanup, and lock release.
+
+Verification:
+
+```text
+Focused service + lease: 2 files passed; 53 tests passed.
+All Task 7 suites: 7 files passed; 139 tests passed.
+Typecheck: blocked only by the known unrelated CodingAgentSession.tsx:387 skillInvocations Props diagnostic.
+```
