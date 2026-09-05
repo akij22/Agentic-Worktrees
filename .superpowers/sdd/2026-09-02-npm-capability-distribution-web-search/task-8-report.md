@@ -23,3 +23,13 @@ Capability Host build: passed (125 modules; capability-host.js emitted).
 Task 7 regression: 7 files passed; 139 tests passed.
 Typecheck: changed Task 8 files pass; blocked only by the known unrelated CodingAgentSession.tsx:387 skillInvocations Props diagnostic.
 ```
+
+## Fix round 1 — readiness, child ownership, bounded settings
+
+- Main startup now awaits composed-catalog refresh before constructing CapabilityHostManager/CapabilityService or registering IPC. Refresh rejection becomes the stable `capability_startup_unavailable` startup state; raw catalog paths/causes are not logged and no window/service/host is created.
+- HostManager resolves all initial descriptors before child launch. Update lookup failure stops an already-owned host and kills its child exactly once, preventing orphan utility processes.
+- Host protocol settings now enforce JSON-only values, finite numbers, 100 keys/items per level, depth 8, identifier-sized keys, and a 256 KiB serialized limit before host handling.
+
+Direct tests added: startup construction order and refresh-failure recovery, pre-launch unknown descriptor plus existing-host leak regression, and oversized/deep/unsupported settings rejection.
+
+Verification: Task 8 **8 files / 72 tests passed**; Capability Host build passed; Task 7 **7 files / 139 tests passed**; typecheck retains only the known unrelated `CodingAgentSession.tsx:387` blocker.

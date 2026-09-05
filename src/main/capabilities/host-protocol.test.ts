@@ -35,6 +35,36 @@ describe("capability host protocol runtime descriptors", () => {
       }),
     ).toThrow();
   });
+  it("rejects oversized settings before IPC handling", () => {
+    expect(() =>
+      mainToHostMessageSchema.parse({
+        ...base,
+        capabilities: [],
+        settings: { capability: { value: "x".repeat(256 * 1024) } },
+      }),
+    ).toThrow();
+  });
+  it("rejects deeply nested settings before IPC handling", () => {
+    let value: unknown = "leaf";
+    for (let index = 0; index < 10; index += 1) value = { nested: value };
+    expect(() =>
+      mainToHostMessageSchema.parse({
+        ...base,
+        capabilities: [],
+        settings: { capability: { value } },
+      }),
+    ).toThrow();
+  });
+  it("rejects unsupported settings values", () => {
+    expect(() =>
+      mainToHostMessageSchema.parse({
+        ...base,
+        capabilities: [],
+        settings: { capability: { value: undefined } },
+      }),
+    ).toThrow();
+  });
+
   it("rejects duplicate capability descriptors", () => {
     expect(() =>
       mainToHostMessageSchema.parse({

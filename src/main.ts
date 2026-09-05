@@ -140,7 +140,7 @@ const initializeSkills = (): SkillService => {
   return service;
 };
 
-const initializeCapabilities = (): CapabilityService => {
+const initializeCapabilities = async (): Promise<CapabilityService> => {
   const repository = new CapabilityRepository();
   const packageRepository = new ManagedPackageRepository();
   const packageLayout = createManagedPackageLayout(
@@ -151,11 +151,11 @@ const initializeCapabilities = (): CapabilityService => {
     packageRepository,
   );
   const catalog = createCapabilityCatalog(installedCatalog);
-  void catalog
-    .refresh()
-    .catch((error) =>
-      console.error("capability.catalog.refresh.failed", error),
-    );
+  try {
+    await catalog.refresh();
+  } catch {
+    throw new Error("capability_catalog_unavailable");
+  }
   const credentials = createElectronCapabilityCredentialStore(
     path.join(app.getPath("userData"), "capability-credentials.bin"),
   );
@@ -299,41 +299,46 @@ const initializeCapabilities = (): CapabilityService => {
   return service;
 };
 
-void app.whenReady().then(async () => {
-  initDatabase();
-  capabilityService = initializeCapabilities();
-  skillService = initializeSkills();
-  registerIpcHandlers();
-  const reconciliation = Promise.all([
-    skillService
-      .reconcileSkills()
-      .catch((error) =>
-        console.error(
-          "Skill reconciliation failed",
-          error instanceof Error ? error.name : "unknown",
+void app
+  .whenReady()
+  .then(async () => {
+    initDatabase();
+    capabilityService = await initializeCapabilities();
+    skillService = initializeSkills();
+    registerIpcHandlers();
+    const reconciliation = Promise.all([
+      skillService
+        .reconcileSkills()
+        .catch((error) =>
+          console.error(
+            "Skill reconciliation failed",
+            error instanceof Error ? error.name : "unknown",
+          ),
         ),
-      ),
-    capabilityService
-      .reconcileCapabilities()
-      .catch((error) =>
-        console.error(
-          "Capability reconciliation failed",
-          error instanceof Error ? error.name : "unknown",
+      capabilityService
+        .reconcileCapabilities()
+        .catch((error) =>
+          console.error(
+            "Capability reconciliation failed",
+            error instanceof Error ? error.name : "unknown",
+          ),
         ),
-      ),
-  ]);
-  await initializeGitHubAuth();
-  await reconciliation;
-  discoverCodingAgents();
-  createWindow();
-  app.on("activate", () => {
-    // On OS X it's common to re-create a window when the dock icon is clicked
-    // and there are no other windows open.
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
+    ]);
+    await initializeGitHubAuth();
+    await reconciliation;
+    discoverCodingAgents();
+    createWindow();
+    app.on("activate", () => {
+      // On OS X it's common to re-create a window when the dock icon is clicked
+      // and there are no other windows open.
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+      }
+    });
+  })
+  .catch(() => {
+    console.error("capability_startup_unavailable");
   });
-});
 
 // Quit when all windows are closed, except on macOS. There, it's common
 // for applications and their menu bar to stay active until the user quits

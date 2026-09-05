@@ -154,6 +154,43 @@ describe("CapabilityHostManager", () => {
     manager.stopHost("ready");
   });
 
+  it("resolves descriptors before launch and kills an existing host on lookup failure", async () => {
+    const children: FakeChild[] = [];
+    const catalog = {
+      ...testCatalog,
+      get: (id: string) => {
+        if (id === "unknown") throw new Error("catalog_collision");
+        return webEntry;
+      },
+    };
+    const manager = new CapabilityHostManager({
+      catalog,
+      launch: () => {
+        const child = new FakeChild();
+        children.push(child);
+        return child;
+      },
+      resolveSecret: async () => undefined,
+      startupTimeoutMs: 100,
+    });
+    expect(() => manager.ensureHost("never-launched", ["unknown"])).toThrow(
+      "catalog_collision",
+    );
+    expect(children).toHaveLength(0);
+    const ready = manager.ensureHost("existing");
+    children[0].emit("message", {
+      type: "host.ready",
+      runId: "existing",
+      port: 43123,
+    });
+    await ready;
+    await expect(
+      manager.setActiveCapabilities("existing", ["unknown"]),
+    ).rejects.toThrow("catalog_collision");
+    expect(children[0].killed).toBe(true);
+    expect(children).toHaveLength(1);
+  });
+
   it("ignores malformed host messages", async () => {
     const children: FakeChild[] = [];
     const manager = new CapabilityHostManager({

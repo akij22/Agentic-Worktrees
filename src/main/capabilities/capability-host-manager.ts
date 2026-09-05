@@ -104,6 +104,10 @@ export class CapabilityHostManager {
     activeCapabilityIds: string[] = [],
     settings: Record<string, Record<string, unknown>> = {},
   ): Promise<CapabilityHostConnection> {
+    const capabilities = runtimeDescriptors(
+      this.dependencies,
+      activeCapabilityIds,
+    );
     const existing = this.hosts.get(runId);
     if (existing) return existing.ready;
     const child = this.dependencies.launch(runId);
@@ -164,7 +168,7 @@ export class CapabilityHostManager {
       type: "host.initialize",
       runId,
       token,
-      capabilities: runtimeDescriptors(this.dependencies, activeCapabilityIds),
+      capabilities,
       settings,
     });
     return ready;
@@ -175,6 +179,13 @@ export class CapabilityHostManager {
     capabilityIds: string[],
     settings: Record<string, Record<string, unknown>> = {},
   ): Promise<string[]> {
+    let capabilities: CapabilityRuntimeDescriptor[];
+    try {
+      capabilities = runtimeDescriptors(this.dependencies, capabilityIds);
+    } catch (error) {
+      if (this.hosts.has(runId)) this.stopHost(runId);
+      throw error;
+    }
     await this.ensureHost(runId);
     const record = this.hosts.get(runId);
     if (!record)
@@ -202,7 +213,7 @@ export class CapabilityHostManager {
       record.child.postMessage({
         type: "host.capabilities.set",
         requestId,
-        capabilities: runtimeDescriptors(this.dependencies, capabilityIds),
+        capabilities,
         settings,
       });
     });

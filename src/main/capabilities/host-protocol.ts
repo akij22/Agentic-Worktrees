@@ -3,10 +3,45 @@ import type { CapabilityErrorCode } from "@agentic-worktrees/capability-sdk";
 import type { CapabilityRuntimeDescriptor } from "./catalog";
 
 const identifierSchema = z.string().min(1).max(256);
-const settingsSchema = z.record(
-  identifierSchema,
-  z.record(identifierSchema, z.unknown()),
-);
+const SETTINGS_MAX_BYTES = 256 * 1024;
+const SETTINGS_MAX_DEPTH = 8;
+const SETTINGS_MAX_KEYS = 100;
+function validSettingValue(value: unknown, depth = 0): boolean {
+  if (depth > SETTINGS_MAX_DEPTH) return false;
+  if (value === null || typeof value === "string" || typeof value === "boolean")
+    return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value))
+    return (
+      value.length <= SETTINGS_MAX_KEYS &&
+      value.every((item) => validSettingValue(item, depth + 1))
+    );
+  if (!value || typeof value !== "object") return false;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return false;
+  const entries = Object.entries(value as Record<string, unknown>);
+  return (
+    entries.length <= SETTINGS_MAX_KEYS &&
+    entries.every(
+      ([key, child]) =>
+        identifierSchema.safeParse(key).success &&
+        validSettingValue(child, depth + 1),
+    )
+  );
+}
+const settingsSchema = z
+  .record(identifierSchema, z.record(identifierSchema, z.unknown()))
+  .superRefine((settings, context) => {
+    if (
+      Object.keys(settings).length > SETTINGS_MAX_KEYS ||
+      !validSettingValue(settings) ||
+      Buffer.byteLength(JSON.stringify(settings), "utf8") > SETTINGS_MAX_BYTES
+    )
+      context.addIssue({
+        code: "custom",
+        message: "Invalid capability settings.",
+      });
+  });
 const bundledRuntimeDescriptorSchema = z
   .object({
     kind: z.literal("bundled"),
