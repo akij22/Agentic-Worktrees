@@ -33,3 +33,11 @@ Typecheck: changed Task 8 files pass; blocked only by the known unrelated Coding
 Direct tests added: startup construction order and refresh-failure recovery, pre-launch unknown descriptor plus existing-host leak regression, and oversized/deep/unsupported settings rejection.
 
 Verification: Task 8 **8 files / 72 tests passed**; Capability Host build passed; Task 7 **7 files / 139 tests passed**; typecheck retains only the known unrelated `CodingAgentSession.tsx:387` blocker.
+
+## Fix round 2 — total post-launch ownership cleanup
+
+`CapabilityHostManager.ensureHost` now wraps every operation after `launch()` in one stable startup boundary: token generation, deferred/record/timer setup, map registration, listener registration, and initialization post. Failure removes a matching partial record, clears its timer, unregisters every listener already attached, and kills the owned child exactly once. Cleanup failures cannot replace or leak into the path-free `internal_error / Capability host failed to start.` result. Existing-host and later `stopHost` calls cannot double-kill.
+
+Direct parameterized regressions inject token generation, partial listener registration, and initialization `postMessage` failures. Each asserts stable errors, one kill, zero message/exit listeners, no retained host (a later stop is a no-op), and no private cause/path exposure.
+
+Verification: Task 8 **8 files / 75 tests passed**; Capability Host build passed; Task 7 **7 files / 139 tests passed**; typecheck retains only the known unrelated `CodingAgentSession.tsx:387` blocker.

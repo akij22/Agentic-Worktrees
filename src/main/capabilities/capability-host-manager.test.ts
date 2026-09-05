@@ -18,17 +18,21 @@ const testCatalog = {
 class FakeChild extends EventEmitter implements CapabilityUtilityProcess {
   sent: MainToHostMessage[] = [];
   killed = false;
+  killCalls = 0;
   postMessage(message: MainToHostMessage): void {
     this.sent.push(message);
   }
-  onMessage(listener: (message: unknown) => void): void {
+  onMessage(listener: (message: unknown) => void): () => void {
     this.on("message", listener);
+    return () => this.off("message", listener);
   }
-  onExit(listener: (code: number) => void): void {
+  onExit(listener: (code: number) => void): () => void {
     this.on("exit", listener);
+    return () => this.off("exit", listener);
   }
   kill(): boolean {
     this.killed = true;
+    this.killCalls++;
     return true;
   }
 }
@@ -153,6 +157,53 @@ describe("CapabilityHostManager", () => {
     ).rejects.toMatchObject({ code: "activation_failed" });
     manager.stopHost("ready");
   });
+
+  it.each(["token", "listener", "postMessage"] as const)(
+    "cleans an owned child exactly once when post-launch %s setup throws",
+    async (phase) => {
+      const child = new FakeChild();
+      if (phase === "listener") {
+        child.onExit = () => {
+          throw new Error("/private/listener");
+        };
+      }
+      if (phase === "postMessage") {
+        child.postMessage = () => {
+          throw new Error("/private/post");
+        };
+      }
+      const manager = new CapabilityHostManager({
+        catalog: testCatalog,
+        launch: () => child,
+        resolveSecret: async () => undefined,
+        ...(phase === "token"
+          ? {
+              createToken: () => {
+                throw new Error("/private/random");
+              },
+            }
+          : {}),
+      });
+      const failure = manager.ensureHost("failed");
+      await expect(failure).rejects.toMatchObject({
+        code: "internal_error",
+        message: "Capability host failed to start.",
+      });
+      expect(child.killCalls).toBe(1);
+      expect(child.listenerCount("message")).toBe(0);
+      expect(child.listenerCount("exit")).toBe(0);
+      expect(
+        JSON.stringify(
+          await failure.catch((error) => ({
+            message: error.message,
+            code: error.code,
+          })),
+        ),
+      ).not.toContain("/private");
+      manager.stopHost("failed");
+      expect(child.killCalls).toBe(1);
+    },
+  );
 
   it("resolves descriptors before launch and kills an existing host on lookup failure", async () => {
     const children: FakeChild[] = [];

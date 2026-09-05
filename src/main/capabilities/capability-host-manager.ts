@@ -22,8 +22,8 @@ export interface CapabilityHostConnection {
 
 export interface CapabilityUtilityProcess {
   postMessage(message: MainToHostMessage): void;
-  onMessage(listener: (message: unknown) => void): void;
-  onExit(listener: (code: number) => void): void;
+  onMessage(listener: (message: unknown) => void): (() => void) | void;
+  onExit(listener: (code: number) => void): (() => void) | void;
   kill(): boolean;
 }
 
@@ -36,6 +36,7 @@ export interface CapabilityHostManagerDependencies {
   startupTimeoutMs?: number;
   updateTimeoutMs?: number;
   catalog?: CapabilityCatalog;
+  createToken?(): string;
 }
 
 interface HostRecord {
@@ -47,6 +48,7 @@ interface HostRecord {
   rejectReady(error: Error): void;
   startupTimer?: ReturnType<typeof setTimeout>;
   activeCapabilityIds: Set<string>;
+  disposeListeners: (() => void)[];
   pending: Map<
     string,
     {
@@ -111,67 +113,104 @@ export class CapabilityHostManager {
     const existing = this.hosts.get(runId);
     if (existing) return existing.ready;
     const child = this.dependencies.launch(runId);
-    const token = randomBytes(32).toString("base64url");
-    let resolveReady!: (connection: CapabilityHostConnection) => void;
-    let rejectReady!: (error: Error) => void;
-    const ready = new Promise<CapabilityHostConnection>((resolve, reject) => {
-      resolveReady = resolve;
-      rejectReady = reject;
-    });
-    const record: HostRecord = {
-      child,
-      token,
-      ready,
-      resolveReady,
-      rejectReady,
-      activeCapabilityIds: new Set(activeCapabilityIds),
-      pending: new Map(),
+    let cleaned = false;
+    const cleanupOwnedChild = () => {
+      if (cleaned) return;
+      cleaned = true;
+      const partial = this.hosts.get(runId);
+      if (partial?.child === child) {
+        this.hosts.delete(runId);
+        if (partial.startupTimer) clearTimeout(partial.startupTimer);
+        for (const dispose of partial.disposeListeners.splice(0)) {
+          try {
+            dispose();
+          } catch {
+            // Startup cleanup remains best-effort and path-free.
+          }
+        }
+      }
+      try {
+        child.kill();
+      } catch {
+        // The stable startup error remains the only public failure.
+      }
     };
-    record.startupTimer = setTimeout(() => {
-      if (!record.connection) {
-        record.rejectReady(
-          new CapabilityError(
-            "internal_error",
-            "Capability host startup timed out.",
-          ),
-        );
-        this.stopHost(runId);
-      }
-    }, this.dependencies.startupTimeoutMs ?? 10_000);
-    this.hosts.set(runId, record);
+    try {
+      const token =
+        this.dependencies.createToken?.() ??
+        randomBytes(32).toString("base64url");
+      let resolveReady!: (connection: CapabilityHostConnection) => void;
+      let rejectReady!: (error: Error) => void;
+      const ready = new Promise<CapabilityHostConnection>((resolve, reject) => {
+        resolveReady = resolve;
+        rejectReady = reject;
+      });
+      const record: HostRecord = {
+        child,
+        token,
+        ready,
+        resolveReady,
+        rejectReady,
+        activeCapabilityIds: new Set(activeCapabilityIds),
+        disposeListeners: [],
+        pending: new Map(),
+      };
+      record.startupTimer = setTimeout(() => {
+        if (!record.connection) {
+          record.rejectReady(
+            new CapabilityError(
+              "internal_error",
+              "Capability host startup timed out.",
+            ),
+          );
+          this.stopHost(runId);
+        }
+      }, this.dependencies.startupTimeoutMs ?? 10_000);
+      this.hosts.set(runId, record);
 
-    child.onMessage((raw) => {
-      if (this.hosts.get(runId) !== record) return;
-      const value =
-        raw && typeof raw === "object" && "data" in raw
-          ? (raw as { data: unknown }).data
-          : raw;
-      if (!isHostToMainMessage(value)) return;
-      this.handleMessage(runId, record, value);
-    });
-    child.onExit(() => {
-      if (record.startupTimer) clearTimeout(record.startupTimer);
-      if (this.hosts.get(runId) !== record) return;
-      this.hosts.delete(runId);
-      const error = new CapabilityError(
-        "internal_error",
-        "Capability host stopped unexpectedly.",
+      const disposeMessage = child.onMessage((raw) => {
+        if (this.hosts.get(runId) !== record) return;
+        const value =
+          raw && typeof raw === "object" && "data" in raw
+            ? (raw as { data: unknown }).data
+            : raw;
+        if (!isHostToMainMessage(value)) return;
+        this.handleMessage(runId, record, value);
+      });
+      if (disposeMessage) record.disposeListeners.push(disposeMessage);
+      const disposeExit = child.onExit(() => {
+        if (record.startupTimer) clearTimeout(record.startupTimer);
+        if (this.hosts.get(runId) !== record) return;
+        this.hosts.delete(runId);
+        const error = new CapabilityError(
+          "internal_error",
+          "Capability host stopped unexpectedly.",
+        );
+        if (!record.connection) record.rejectReady(error);
+        for (const request of record.pending.values()) {
+          clearTimeout(request.timer);
+          request.reject(error);
+        }
+        record.pending.clear();
+      });
+      if (disposeExit) record.disposeListeners.push(disposeExit);
+      child.postMessage({
+        type: "host.initialize",
+        runId,
+        token,
+        capabilities,
+        settings,
+      });
+      return ready;
+    } catch {
+      cleanupOwnedChild();
+      return Promise.reject(
+        new CapabilityError(
+          "internal_error",
+          "Capability host failed to start.",
+        ),
       );
-      if (!record.connection) record.rejectReady(error);
-      for (const request of record.pending.values()) {
-        clearTimeout(request.timer);
-        request.reject(error);
-      }
-      record.pending.clear();
-    });
-    child.postMessage({
-      type: "host.initialize",
-      runId,
-      token,
-      capabilities,
-      settings,
-    });
-    return ready;
+    }
   }
 
   async setActiveCapabilities(
@@ -233,6 +272,7 @@ export class CapabilityHostManager {
     if (record.startupTimer) clearTimeout(record.startupTimer);
     const error = new CapabilityError("cancelled", "Capability host stopped.");
     if (!record.connection) record.rejectReady(error);
+    for (const dispose of record.disposeListeners.splice(0)) dispose();
     record.child.kill();
     for (const request of record.pending.values()) {
       clearTimeout(request.timer);
@@ -317,9 +357,11 @@ function adaptElectronUtilityProcess(
     },
     onMessage(listener) {
       child.on("message", listener);
+      return () => child.off("message", listener);
     },
     onExit(listener) {
       child.on("exit", listener);
+      return () => child.off("exit", listener);
     },
     kill: () => child.kill(),
   };
