@@ -72,8 +72,10 @@ export type PackageRemoveRequest = z.infer<typeof packageRemoveRequestSchema>;
 
 export const capabilityUpdateSchema = z.object({
 	packageName: packageNameSchema, capabilityId: nonEmptyString, currentVersion: nonEmptyString,
-	candidateVersion: nonEmptyString, releaseNotes: z.string(), permissionChanged: z.boolean(),
-	downgrade: z.boolean(), requiresSetup: z.boolean(), activeRunCount: z.number().int().nonnegative(),
+	candidateVersion: nonEmptyString, releaseNotes: z.string().optional(), permissionChanged: z.boolean().optional(),
+	downgrade: z.boolean(), requiresSetup: z.boolean().optional(), activeRunCount: z.number().int().nonnegative(),
+	// Discovery cannot know manifest compatibility before explicit static inspection.
+	requiresReview: z.boolean().optional(),
 });
 export type CapabilityUpdateDto = z.infer<typeof capabilityUpdateSchema>;
 export const capabilityDistributionProgressSchema = z.object({

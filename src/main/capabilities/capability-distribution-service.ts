@@ -1,10 +1,15 @@
 import { randomUUID } from "node:crypto";
+import { gt, valid } from "semver";
+import { NpmPackageMetadata } from "../packages/npm-metadata";
 import {
   capabilityDetailSchema,
   type CapabilitySummaryDto,
   type CapabilityDetailDto,
 } from "../../shared/capabilities/schemas";
 import {
+  capabilityUpdateSchema,
+  packageNameSchema,
+  type CapabilityUpdateDto,
   capabilityPackageInspectionSchema,
   capabilityDistributionProgressSchema,
   packageErrorCodeSchema,
@@ -87,6 +92,7 @@ export class CapabilityDistributionService {
     private readonly deps: {
       layout: ManagedPackageLayout;
       acquirer?: NpmPackageAcquirer;
+      metadata?: Pick<NpmPackageMetadata, "resolve">;
       inspector?: CapabilityPackageInspector;
       verifier: CapabilityPackageVerifier;
       installer?: CapabilityPackageInstaller;
@@ -151,6 +157,90 @@ export class CapabilityDistributionService {
       }
     }
   }
+  async checkForUpdates(packageName?: string): Promise<CapabilityUpdateDto[]> {
+    if (
+      packageName !== undefined &&
+      !packageNameSchema.safeParse(packageName).success
+    )
+      throw new Error("package_source_invalid");
+    const installations =
+      packageName === undefined
+        ? this.repository.list("capability")
+        : [this.repository.getByPackageName(packageName)];
+    if (
+      installations.some(
+        (record) => !record || record.itemKind !== "capability",
+      )
+    )
+      throw new Error("package_not_found");
+    const updates: CapabilityUpdateDto[] = [];
+    for (const installation of installations) {
+      if (!installation?.activeVersion || !valid(installation.activeVersion))
+        continue;
+      let official;
+      if (installation.trust === "official") {
+        try {
+          official = await (
+            this.deps.officialCatalog ?? new OfficialCatalogService()
+          ).findCapability(installation.itemId);
+        } catch {
+          throw new Error("package_download_failed");
+        }
+        if (
+          !official ||
+          official.packageName !== installation.packageName ||
+          official.capabilityId !== installation.itemId ||
+          official.blockedVersions.includes(official.releaseSpec)
+        )
+          throw new Error("package_blocked");
+      }
+      let candidate;
+      try {
+        candidate = await (
+          this.deps.metadata ?? new NpmPackageMetadata()
+        ).resolve(
+          official
+            ? `${installation.packageName}@${official.releaseSpec}`
+            : installation.packageName,
+        );
+      } catch (error) {
+        const code = packageErrorCodeSchema.safeParse(
+          error instanceof Error ? error.message : undefined,
+        );
+        throw new Error(code.success ? code.data : "package_download_failed");
+      }
+      if (
+        candidate.packageName !== installation.packageName ||
+        !valid(candidate.version) ||
+        (official && candidate.version !== official.releaseSpec)
+      )
+        throw new Error("package_manifest_invalid");
+      if (!gt(candidate.version, installation.activeVersion)) continue;
+      updates.push(
+        freeze(
+          capabilityUpdateSchema.parse({
+            packageName: installation.packageName,
+            capabilityId: installation.itemId,
+            currentVersion: installation.activeVersion,
+            candidateVersion: candidate.version,
+            ...((official?.releaseNotes ?? candidate.releaseNotes) !== undefined
+              ? {
+                  releaseNotes:
+                    official?.releaseNotes ?? candidate.releaseNotes,
+                }
+              : {}),
+            downgrade: false,
+            requiresReview: true,
+            activeRunCount: this.capabilityRepository
+              .listSessionCapabilitiesByCapabilityId(installation.itemId)
+              .filter((record) => record.status === "active").length,
+          }),
+        ),
+      );
+    }
+    return updates;
+  }
+
   async listMarketplaceCapabilities(): Promise<CapabilitySummaryDto[]> {
     return [];
   }
