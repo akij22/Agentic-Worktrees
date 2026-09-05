@@ -41,3 +41,11 @@ Verification: Task 8 **8 files / 72 tests passed**; Capability Host build passed
 Direct parameterized regressions inject token generation, partial listener registration, and initialization `postMessage` failures. Each asserts stable errors, one kill, zero message/exit listeners, no retained host (a later stop is a no-op), and no private cause/path exposure.
 
 Verification: Task 8 **8 files / 75 tests passed**; Capability Host build passed; Task 7 **7 files / 139 tests passed**; typecheck retains only the known unrelated `CodingAgentSession.tsx:387` blocker.
+
+## Fix round 3 — resilient listener and exit-race cleanup
+
+Host startup now retains child, record, and listener cleanup ownership in local state independent of the host map. Listener cleanup wrappers are registered before each potentially throwing registration call and can remove callbacks explicitly even when registration attaches then throws without returning a disposer. Startup and `stopHost` run every disposer independently, normalize/log disposer failures, reject and clear all pending requests, and still kill the child exactly once. An exit event that removes the map record during initialization no longer defeats subsequent cleanup.
+
+Direct tests cover: disposer throw with pending-request rejection and continued kill/cleanup; `onMessage` attach-then-throw removal; exit removing the record before `postMessage` throws; exact-once kill after later stop; and existing normal startup behavior.
+
+Verification: Task 8 **8 files / 77 tests passed**; Capability Host build passed; Task 7 **7 files / 139 tests passed**; typecheck retains only the known unrelated `CodingAgentSession.tsx:387` blocker.

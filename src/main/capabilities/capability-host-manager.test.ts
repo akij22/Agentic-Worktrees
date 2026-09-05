@@ -30,6 +30,12 @@ class FakeChild extends EventEmitter implements CapabilityUtilityProcess {
     this.on("exit", listener);
     return () => this.off("exit", listener);
   }
+  removeMessageListener(listener: (message: unknown) => void): void {
+    this.off("message", listener);
+  }
+  removeExitListener(listener: (code: number) => void): void {
+    this.off("exit", listener);
+  }
   kill(): boolean {
     this.killed = true;
     this.killCalls++;
@@ -163,7 +169,8 @@ describe("CapabilityHostManager", () => {
     async (phase) => {
       const child = new FakeChild();
       if (phase === "listener") {
-        child.onExit = () => {
+        child.onMessage = (listener) => {
+          child.on("message", listener);
           throw new Error("/private/listener");
         };
       }
@@ -204,6 +211,65 @@ describe("CapabilityHostManager", () => {
       expect(child.killCalls).toBe(1);
     },
   );
+
+  it("continues listener and child cleanup when one disposer throws", async () => {
+    const child = new FakeChild();
+    const logError = vi.fn();
+    child.onMessage = (listener) => {
+      child.on("message", listener);
+      return () => {
+        throw new Error("/private/disposer");
+      };
+    };
+    const manager = new CapabilityHostManager({
+      catalog: testCatalog,
+      launch: () => child,
+      resolveSecret: async () => undefined,
+      logError,
+    });
+    const ready = manager.ensureHost("dispose");
+    child.emit("message", {
+      type: "host.ready",
+      runId: "dispose",
+      port: 43123,
+    });
+    await ready;
+    const pending = manager.setActiveCapabilities("dispose", [
+      "agentic-worktrees.web-search",
+    ]);
+    await Promise.resolve();
+    manager.stopHost("dispose");
+    await expect(pending).rejects.toMatchObject({ code: "cancelled" });
+    expect(logError).toHaveBeenCalledWith(
+      "capability_host_listener_cleanup_failed",
+    );
+    expect(child.listenerCount("exit")).toBe(0);
+    expect(child.killCalls).toBe(1);
+    manager.stopHost("dispose");
+    expect(child.killCalls).toBe(1);
+  });
+
+  it("retains local cleanup ownership when exit removes the startup record", async () => {
+    const child = new FakeChild();
+    child.postMessage = () => {
+      child.emit("exit", 1);
+      throw new Error("/private/post-after-exit");
+    };
+    const manager = new CapabilityHostManager({
+      catalog: testCatalog,
+      launch: () => child,
+      resolveSecret: async () => undefined,
+    });
+    await expect(manager.ensureHost("exit-race")).rejects.toMatchObject({
+      code: "internal_error",
+      message: "Capability host failed to start.",
+    });
+    expect(child.listenerCount("message")).toBe(0);
+    expect(child.listenerCount("exit")).toBe(0);
+    expect(child.killCalls).toBe(1);
+    manager.stopHost("exit-race");
+    expect(child.killCalls).toBe(1);
+  });
 
   it("resolves descriptors before launch and kills an existing host on lookup failure", async () => {
     const children: FakeChild[] = [];

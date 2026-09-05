@@ -24,6 +24,8 @@ export interface CapabilityUtilityProcess {
   postMessage(message: MainToHostMessage): void;
   onMessage(listener: (message: unknown) => void): (() => void) | void;
   onExit(listener: (code: number) => void): (() => void) | void;
+  removeMessageListener?(listener: (message: unknown) => void): void;
+  removeExitListener?(listener: (code: number) => void): void;
   kill(): boolean;
 }
 
@@ -37,6 +39,7 @@ export interface CapabilityHostManagerDependencies {
   updateTimeoutMs?: number;
   catalog?: CapabilityCatalog;
   createToken?(): string;
+  logError?(code: "capability_host_listener_cleanup_failed"): void;
 }
 
 interface HostRecord {
@@ -114,20 +117,35 @@ export class CapabilityHostManager {
     if (existing) return existing.ready;
     const child = this.dependencies.launch(runId);
     let cleaned = false;
+    let ownedRecord: HostRecord | undefined;
+    const ownedDisposers: (() => void)[] = [];
+    const disposeOwnedListeners = () => {
+      for (const dispose of ownedDisposers.splice(0)) {
+        try {
+          dispose();
+        } catch {
+          this.dependencies.logError?.(
+            "capability_host_listener_cleanup_failed",
+          );
+        }
+      }
+    };
     const cleanupOwnedChild = () => {
       if (cleaned) return;
       cleaned = true;
-      const partial = this.hosts.get(runId);
-      if (partial?.child === child) {
-        this.hosts.delete(runId);
-        if (partial.startupTimer) clearTimeout(partial.startupTimer);
-        for (const dispose of partial.disposeListeners.splice(0)) {
-          try {
-            dispose();
-          } catch {
-            // Startup cleanup remains best-effort and path-free.
-          }
+      if (this.hosts.get(runId)?.child === child) this.hosts.delete(runId);
+      if (ownedRecord?.startupTimer) clearTimeout(ownedRecord.startupTimer);
+      disposeOwnedListeners();
+      if (ownedRecord) {
+        const error = new CapabilityError(
+          "internal_error",
+          "Capability host failed to start.",
+        );
+        for (const request of ownedRecord.pending.values()) {
+          clearTimeout(request.timer);
+          request.reject(error);
         }
+        ownedRecord.pending.clear();
       }
       try {
         child.kill();
@@ -145,16 +163,17 @@ export class CapabilityHostManager {
         resolveReady = resolve;
         rejectReady = reject;
       });
-      const record: HostRecord = {
+      void ready.catch(() => undefined);
+      const record: HostRecord = (ownedRecord = {
         child,
         token,
         ready,
         resolveReady,
         rejectReady,
         activeCapabilityIds: new Set(activeCapabilityIds),
-        disposeListeners: [],
+        disposeListeners: ownedDisposers,
         pending: new Map(),
-      };
+      });
       record.startupTimer = setTimeout(() => {
         if (!record.connection) {
           record.rejectReady(
@@ -168,7 +187,7 @@ export class CapabilityHostManager {
       }, this.dependencies.startupTimeoutMs ?? 10_000);
       this.hosts.set(runId, record);
 
-      const disposeMessage = child.onMessage((raw) => {
+      const messageListener = (raw: unknown) => {
         if (this.hosts.get(runId) !== record) return;
         const value =
           raw && typeof raw === "object" && "data" in raw
@@ -176,9 +195,15 @@ export class CapabilityHostManager {
             : raw;
         if (!isHostToMainMessage(value)) return;
         this.handleMessage(runId, record, value);
-      });
-      if (disposeMessage) record.disposeListeners.push(disposeMessage);
-      const disposeExit = child.onExit(() => {
+      };
+      let returnedMessageDisposer: (() => void) | void;
+      ownedDisposers.push(() =>
+        returnedMessageDisposer
+          ? returnedMessageDisposer()
+          : child.removeMessageListener?.(messageListener),
+      );
+      returnedMessageDisposer = child.onMessage(messageListener);
+      const exitListener = (_code: number) => {
         if (record.startupTimer) clearTimeout(record.startupTimer);
         if (this.hosts.get(runId) !== record) return;
         this.hosts.delete(runId);
@@ -192,8 +217,14 @@ export class CapabilityHostManager {
           request.reject(error);
         }
         record.pending.clear();
-      });
-      if (disposeExit) record.disposeListeners.push(disposeExit);
+      };
+      let returnedExitDisposer: (() => void) | void;
+      ownedDisposers.push(() =>
+        returnedExitDisposer
+          ? returnedExitDisposer()
+          : child.removeExitListener?.(exitListener),
+      );
+      returnedExitDisposer = child.onExit(exitListener);
       child.postMessage({
         type: "host.initialize",
         runId,
@@ -272,13 +303,23 @@ export class CapabilityHostManager {
     if (record.startupTimer) clearTimeout(record.startupTimer);
     const error = new CapabilityError("cancelled", "Capability host stopped.");
     if (!record.connection) record.rejectReady(error);
-    for (const dispose of record.disposeListeners.splice(0)) dispose();
-    record.child.kill();
+    for (const dispose of record.disposeListeners.splice(0)) {
+      try {
+        dispose();
+      } catch {
+        this.dependencies.logError?.("capability_host_listener_cleanup_failed");
+      }
+    }
     for (const request of record.pending.values()) {
       clearTimeout(request.timer);
       request.reject(error);
     }
     record.pending.clear();
+    try {
+      record.child.kill();
+    } catch {
+      // Child teardown is best-effort and never exposes utility details.
+    }
   }
 
   async stopAll(): Promise<void> {
@@ -363,6 +404,8 @@ function adaptElectronUtilityProcess(
       child.on("exit", listener);
       return () => child.off("exit", listener);
     },
+    removeMessageListener: (listener) => child.off("message", listener),
+    removeExitListener: (listener) => child.off("exit", listener),
     kill: () => child.kill(),
   };
 }
