@@ -359,6 +359,60 @@ describe("CapabilityService", () => {
     ).toMatchObject({ status: "active", version: webEntry.manifest.version });
   });
 
+  it("rejects a stale deactivation snapshot after external session state changes", async () => {
+    const repository = new CapabilityRepository(sqlite);
+    repository.upsertInstallation({
+      capabilityId: webEntry.manifest.id,
+      version: webEntry.manifest.version,
+      permissionDigest: permissionDigest(webEntry.manifest),
+      configured: true,
+    });
+    repository.transitionSessionCapability({
+      runId: "run-1",
+      capabilityId: webEntry.manifest.id,
+      version: webEntry.manifest.version,
+      to: "pending_activation",
+    });
+    repository.transitionSessionCapability({
+      runId: "run-1",
+      capabilityId: webEntry.manifest.id,
+      version: webEntry.manifest.version,
+      to: "active",
+    });
+    const setActiveCapabilities = vi.fn().mockResolvedValue(["web_search"]);
+    const apply = vi.fn();
+    const service = new CapabilityService({
+      catalog: managedCatalog,
+      repository,
+      credentials: {} as never,
+      hosts: { setActiveCapabilities, stopHost: vi.fn() } as never,
+      activator: {
+        isAgentIdle: vi.fn().mockResolvedValue(true),
+        prepareSession: vi.fn(),
+        apply,
+        remove: vi.fn(),
+      } as never,
+      getAgentKind: vi.fn().mockResolvedValue("codex"),
+    });
+    await service.deactivateRuns(webEntry.manifest.id);
+    const hostCallsAfterDeactivation = setActiveCapabilities.mock.calls.length;
+    repository.updateSessionCapabilityVersions(
+      webEntry.manifest.id,
+      ["run-1"],
+      "9.9.9",
+    );
+    await expect(
+      service.reactivateRuns(webEntry.manifest.id, webEntry.manifest.version),
+    ).rejects.toThrow("state changed after deactivation");
+    expect(
+      repository.getSessionCapability("run-1", webEntry.manifest.id),
+    ).toMatchObject({ status: "inactive", version: "9.9.9" });
+    expect(setActiveCapabilities).toHaveBeenCalledTimes(
+      hostCallsAfterDeactivation,
+    );
+    expect(apply).not.toHaveBeenCalled();
+  });
+
   it("serializes concurrent package coordination before snapshot mutation", async () => {
     const repository = new CapabilityRepository(sqlite);
     repository.transitionSessionCapability({

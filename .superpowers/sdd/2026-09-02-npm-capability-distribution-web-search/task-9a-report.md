@@ -34,3 +34,11 @@ Typecheck: changed Task 9A files pass; only the known unrelated CodingAgentSessi
 Direct additions cover idle rejection followed by forbidden reactivate, concurrent deactivate/reactivate exclusion, second-run reactivation failure with provider rollback and exact inactive DB restoration, and timestamp/record mutation rejection.
 
 Verification: focused Task 9A **2 files / 19 tests passed**; Task 8+repository **9 files / 93 tests passed**; Task 7 **7 files / 142 tests passed**; typecheck retains only the known unrelated `CodingAgentSession.tsx:387` blocker.
+
+## Remaining review fix — revision-bound deactivation snapshots
+
+Coordinator deactivation state now stores an opaque UUID token, monotonic service revision, and immutable repository snapshot. A second deactivation cannot overwrite a pending snapshot. Reactivation requires the same token/revision and verifies the complete current association set still matches the expected post-deactivation IDs, versions, and statuses before and after the asynchronous idle gate. Stale state fails closed with a stable activation error before host/provider work; the stale snapshot is neither restored nor deleted. Conditional cleanup/deletion also checks token and revision.
+
+Direct deterministic coverage externally changes the inactive session version between deactivation and reactivation, then asserts rejection, preservation of the external state, and zero reactivation host/provider calls. Existing concurrency coverage proves overlapping deactivate/reactivate cannot replace the revision-bound snapshot.
+
+Verification: focused Task 9A **2 files / 20 tests passed**; Task 8+repository **9 files / 94 tests passed**; Task 7 **7 files / 142 tests passed**; typecheck retains only the known unrelated `CodingAgentSession.tsx:387` blocker.
