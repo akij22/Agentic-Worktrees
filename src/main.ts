@@ -24,7 +24,10 @@ import { CapabilityRepository } from "./main/capabilities/capability-repository"
 import { createElectronCapabilityCredentialStore } from "./main/capabilities/capability-credential-store";
 import { createElectronCapabilityHostManager } from "./main/capabilities/capability-host-manager";
 import { CapabilityService } from "./main/capabilities/capability-service";
-import { getBundledCapability } from "./main/capabilities/catalog";
+import { createCapabilityCatalog } from "./main/capabilities/catalog";
+import { InstalledCapabilityCatalog } from "./main/capabilities/installed-catalog";
+import { ManagedPackageRepository } from "./main/packages/package-repository";
+import { createManagedPackageLayout } from "./main/packages/storage-layout";
 import { SkillRepository } from "./main/skills/skill-repository";
 import { SkillService } from "./main/skills/skill-service";
 import { createSkillStorageLayout } from "./main/skills/skill-installer";
@@ -121,32 +124,45 @@ const initializeSkills = (): SkillService => {
   });
   configureSkillIpc(service);
   configureCodingAgentSkillInvocationSource((runId) =>
-    service
-      .listRunInvocations(runId)
-      .map((record) => ({
-        id: record.id,
-        skillId: record.skillId,
-        name: service.getSkill(record.skillId)?.name ?? record.skillId,
-        version: record.version,
-        mode: record.mode,
-        status: record.status,
-        ...(record.errorCode ? { errorCode: record.errorCode } : {}),
-        requestedAt: record.requestedAt.toISOString(),
-        ...(record.loadedAt ? { loadedAt: record.loadedAt.toISOString() } : {}),
-        ...(record.failedAt ? { failedAt: record.failedAt.toISOString() } : {}),
-      })),
+    service.listRunInvocations(runId).map((record) => ({
+      id: record.id,
+      skillId: record.skillId,
+      name: service.getSkill(record.skillId)?.name ?? record.skillId,
+      version: record.version,
+      mode: record.mode,
+      status: record.status,
+      ...(record.errorCode ? { errorCode: record.errorCode } : {}),
+      requestedAt: record.requestedAt.toISOString(),
+      ...(record.loadedAt ? { loadedAt: record.loadedAt.toISOString() } : {}),
+      ...(record.failedAt ? { failedAt: record.failedAt.toISOString() } : {}),
+    })),
   );
   return service;
 };
 
 const initializeCapabilities = (): CapabilityService => {
   const repository = new CapabilityRepository();
+  const packageRepository = new ManagedPackageRepository();
+  const packageLayout = createManagedPackageLayout(
+    path.join(app.getPath("userData"), "managed-packages"),
+  );
+  const installedCatalog = new InstalledCapabilityCatalog(
+    packageLayout,
+    packageRepository,
+  );
+  const catalog = createCapabilityCatalog(installedCatalog);
+  void catalog
+    .refresh()
+    .catch((error) =>
+      console.error("capability.catalog.refresh.failed", error),
+    );
   const credentials = createElectronCapabilityCredentialStore(
     path.join(app.getPath("userData"), "capability-credentials.bin"),
   );
   const hosts = createElectronCapabilityHostManager(
     (capabilityId, settingKey) =>
       service.resolveSecret(capabilityId, settingKey),
+    catalog,
   );
   const connections = new Map<
     string,
@@ -236,6 +252,7 @@ const initializeCapabilities = (): CapabilityService => {
     getAgentVersion: async (runId) =>
       getCodingAgentCapabilitySession(runId).version,
     logError: (event, code) => console.error(event, code),
+    catalog,
   });
   configureCodingAgentCapabilityBridge({
     prepareSession: prepare,
@@ -249,21 +266,19 @@ const initializeCapabilities = (): CapabilityService => {
       hosts.stopHost(runId);
     },
     listSessionCapabilities: (runId) =>
-      repository
-        .listSessionCapabilities(runId)
-        .map((record) => ({
-          id: record.capabilityId,
-          name: getBundledCapability(record.capabilityId).manifest.name,
-          version: record.version,
-          state: record.status,
-          ...(record.errorCode ? { errorCode: record.errorCode } : {}),
-          ...(record.activatedAt
-            ? { activatedAt: record.activatedAt.toISOString() }
-            : {}),
-          ...(record.deactivatedAt
-            ? { deactivatedAt: record.deactivatedAt.toISOString() }
-            : {}),
-        })),
+      repository.listSessionCapabilities(runId).map((record) => ({
+        id: record.capabilityId,
+        name: catalog.get(record.capabilityId).manifest.name,
+        version: record.version,
+        state: record.status,
+        ...(record.errorCode ? { errorCode: record.errorCode } : {}),
+        ...(record.activatedAt
+          ? { activatedAt: record.activatedAt.toISOString() }
+          : {}),
+        ...(record.deactivatedAt
+          ? { deactivatedAt: record.deactivatedAt.toISOString() }
+          : {}),
+      })),
     isReloading: (runId) => {
       const interruptedStates = [
         "pending_activation",
