@@ -124,10 +124,14 @@ export class ConsentLeaseRegistry {
       rejectCancel: ((error: unknown) => void) | undefined;
     const choose = (next: Command<Payload>) => {
       if (next.kind === "cancel") {
-        if (phase === "committing" || (commandChosen && phase === "pending")) throw safeError("package_busy");
+        if (phase === "committing" || (commandChosen && phase === "pending"))
+          throw safeError("package_busy");
         cancelRequested = true;
         options.onCancel?.();
-        if (!commandChosen) { commandChosen = true; command.resolve(next); }
+        if (!commandChosen) {
+          commandChosen = true;
+          command.resolve(next);
+        }
         return;
       }
       if (commandChosen) throw safeError("package_busy");
@@ -187,11 +191,13 @@ export class ConsentLeaseRegistry {
             throw safeError("package_busy");
           }
           try {
-            const result = await options.accept(
-              selected.payload,
-              acquired,
-              { ...owner, setPhase: (next) => { phase = next; owner.setPhase?.(next); } },
-            );
+            const result = await options.accept(selected.payload, acquired, {
+              ...owner,
+              setPhase: (next) => {
+                phase = next;
+                owner.setPhase?.(next);
+              },
+            });
             outcome = freeze({ reason: "completed" });
             return result;
           } catch (error) {
@@ -203,7 +209,10 @@ export class ConsentLeaseRegistry {
               ? error
               : safeError("package_install_failed");
           if (cancelRequested) {
-            outcome = freeze({ reason: "cancelled" as const, code: "package_permission_denied" as const });
+            outcome = freeze({
+              reason: "cancelled" as const,
+              code: "package_permission_denied" as const,
+            });
             throw safeError("package_permission_denied");
           } else if (outcome.reason !== "expired")
             outcome = freeze({ reason: "failed", code: safe.code });
