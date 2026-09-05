@@ -124,9 +124,18 @@ function parseStoredSetting(serialized: string): CapabilitySettingValue {
     "Stored capability settings are invalid.",
   );
 }
+export interface SessionCapabilitySnapshotRecord extends Omit<
+  SessionCapabilityRecord,
+  "createdAt" | "updatedAt" | "activatedAt" | "deactivatedAt"
+> {
+  readonly createdAt: number;
+  readonly updatedAt: number;
+  readonly activatedAt?: number;
+  readonly deactivatedAt?: number;
+}
 export interface SessionCapabilitySnapshot {
   readonly capabilityId: string;
-  readonly records: readonly SessionCapabilityRecord[];
+  readonly records: readonly Readonly<SessionCapabilitySnapshotRecord>[];
 }
 
 const sessionSelect = `SELECT id, run_id runId, capability_id capabilityId, version, status, error_code errorCode, activated_at activatedAt, deactivated_at deactivatedAt, created_at createdAt, updated_at updatedAt FROM session_capabilities`;
@@ -365,7 +374,22 @@ export class CapabilityRepository {
       capabilityId,
       records: Object.freeze(
         this.listSessionCapabilitiesByCapabilityId(capabilityId).map((record) =>
-          Object.freeze({ ...record }),
+          Object.freeze({
+            id: record.id,
+            runId: record.runId,
+            capabilityId: record.capabilityId,
+            version: record.version,
+            status: record.status,
+            ...(record.errorCode ? { errorCode: record.errorCode } : {}),
+            createdAt: record.createdAt.getTime(),
+            updatedAt: record.updatedAt.getTime(),
+            ...(record.activatedAt
+              ? { activatedAt: record.activatedAt.getTime() }
+              : {}),
+            ...(record.deactivatedAt
+              ? { deactivatedAt: record.deactivatedAt.getTime() }
+              : {}),
+          }),
         ),
       ),
     });
@@ -408,10 +432,10 @@ export class CapabilityRepository {
           record.version,
           record.status,
           record.errorCode ?? null,
-          record.activatedAt?.getTime() ?? null,
-          record.deactivatedAt?.getTime() ?? null,
-          record.createdAt.getTime(),
-          record.updatedAt.getTime(),
+          record.activatedAt ?? null,
+          record.deactivatedAt ?? null,
+          record.createdAt,
+          record.updatedAt,
         );
     })();
   }

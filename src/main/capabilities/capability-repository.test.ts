@@ -254,10 +254,22 @@ describe("CapabilityRepository", () => {
         ?.version,
     ).toBe("0.2.0");
     repository.restoreSessionCapabilities(snapshot);
-    expect(
-      repository.getSessionCapability("run-1", "agentic-worktrees.web-search"),
-    ).toEqual(snapshot.records[0]);
+    const restored = repository.getSessionCapability(
+      "run-1",
+      "agentic-worktrees.web-search",
+    );
+    expect(restored).toMatchObject({
+      runId: snapshot.records[0].runId,
+      version: snapshot.records[0].version,
+      status: snapshot.records[0].status,
+    });
+    expect(restored?.createdAt.getTime()).toBe(snapshot.records[0].createdAt);
     expect(Object.isFrozen(snapshot.records)).toBe(true);
+    expect(Object.isFrozen(snapshot.records[0])).toBe(true);
+    expect(() => {
+      (snapshot.records[0] as { createdAt: number }).createdAt = 0;
+    }).toThrow();
+    expect(snapshot.records[0].createdAt).not.toBe(0);
   });
 
   it("rolls back all session versions when one requested association is missing", () => {

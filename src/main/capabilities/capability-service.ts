@@ -87,6 +87,7 @@ export class CapabilityService implements CapabilitySessionPackageCoordinator {
     string,
     ReturnType<CapabilityRepository["snapshotSessionCapabilities"]>
   >();
+  private readonly packageSessionOperations = new Set<string>();
   private readonly listeners = new Set<
     (event: CapabilityChangedEventDto) => void
   >();
@@ -540,63 +541,96 @@ export class CapabilityService implements CapabilitySessionPackageCoordinator {
 
   async deactivateRuns(capabilityId: string): Promise<void> {
     this.assertManagedCapability(capabilityId);
-    const snapshot =
-      this.dependencies.repository.snapshotSessionCapabilities(capabilityId);
-    this.packageSessionSnapshots.set(capabilityId, snapshot);
-    const runIds = [...this.listActiveRuns(capabilityId)];
-    await this.assertRunsIdle(runIds);
-    const deactivated: string[] = [];
+    if (this.packageSessionOperations.has(capabilityId))
+      throw new CapabilityError(
+        "activation_failed",
+        "Capability session coordination is already in progress.",
+      );
+    this.packageSessionOperations.add(capabilityId);
+    let snapshot:
+      | ReturnType<CapabilityRepository["snapshotSessionCapabilities"]>
+      | undefined;
     try {
-      for (const runId of runIds) {
-        await this.deactivateCapability(runId, capabilityId);
-        deactivated.push(runId);
+      const runIds = [...this.listActiveRuns(capabilityId)];
+      await this.assertRunsIdle(runIds);
+      snapshot =
+        this.dependencies.repository.snapshotSessionCapabilities(capabilityId);
+      this.packageSessionSnapshots.set(capabilityId, snapshot);
+      const deactivated: string[] = [];
+      try {
+        for (const runId of runIds) {
+          await this.deactivateCapability(runId, capabilityId);
+          deactivated.push(runId);
+        }
+      } catch (error) {
+        for (const runId of deactivated.reverse())
+          await this.activateCapability(runId, capabilityId).catch(
+            () => undefined,
+          );
+        this.dependencies.repository.restoreSessionCapabilities(snapshot);
+        this.packageSessionSnapshots.delete(capabilityId);
+        throw error;
       }
     } catch (error) {
-      for (const runId of deactivated.reverse())
-        await this.activateCapability(runId, capabilityId).catch(
-          () => undefined,
-        );
-      this.dependencies.repository.restoreSessionCapabilities(snapshot);
-      this.packageSessionSnapshots.delete(capabilityId);
+      if (!snapshot) this.packageSessionSnapshots.delete(capabilityId);
       throw error;
+    } finally {
+      this.packageSessionOperations.delete(capabilityId);
     }
   }
 
   async reactivateRuns(capabilityId: string, version: string): Promise<void> {
     this.assertManagedCapability(capabilityId);
-    this.getCatalog(capabilityId, version);
-    const prior = this.packageSessionSnapshots.get(capabilityId);
-    if (!prior)
+    if (this.packageSessionOperations.has(capabilityId))
       throw new CapabilityError(
-        "invalid_input",
-        "No package session deactivation is pending.",
+        "activation_failed",
+        "Capability session coordination is already in progress.",
       );
-    const activeRunIds = new Set(
-      prior.records
-        .filter((record) => record.status === "active")
-        .map((record) => record.runId),
-    );
-    const records = this.dependencies.repository
-      .listSessionCapabilitiesByCapabilityId(capabilityId)
-      .filter(
-        (record) =>
-          record.status === "inactive" && activeRunIds.has(record.runId),
-      );
-    await this.assertRunsIdle(records.map((record) => record.runId));
-    const snapshot =
-      this.dependencies.repository.snapshotSessionCapabilities(capabilityId);
+    this.packageSessionOperations.add(capabilityId);
     try {
-      for (const record of records)
-        await this.activateCapability(record.runId, capabilityId);
-      this.dependencies.repository.updateSessionCapabilityVersions(
-        capabilityId,
-        records.map((record) => record.runId),
-        version,
+      this.getCatalog(capabilityId, version);
+      const prior = this.packageSessionSnapshots.get(capabilityId);
+      if (!prior)
+        throw new CapabilityError(
+          "invalid_input",
+          "No package session deactivation is pending.",
+        );
+      const activeRunIds = new Set(
+        prior.records
+          .filter((record) => record.status === "active")
+          .map((record) => record.runId),
       );
-      this.packageSessionSnapshots.delete(capabilityId);
-    } catch (error) {
-      this.dependencies.repository.restoreSessionCapabilities(snapshot);
-      throw error;
+      const records = this.dependencies.repository
+        .listSessionCapabilitiesByCapabilityId(capabilityId)
+        .filter(
+          (record) =>
+            record.status === "inactive" && activeRunIds.has(record.runId),
+        );
+      await this.assertRunsIdle(records.map((record) => record.runId));
+      const snapshot =
+        this.dependencies.repository.snapshotSessionCapabilities(capabilityId);
+      const reactivated: string[] = [];
+      try {
+        for (const record of records) {
+          await this.activateCapability(record.runId, capabilityId);
+          reactivated.push(record.runId);
+        }
+        this.dependencies.repository.updateSessionCapabilityVersions(
+          capabilityId,
+          records.map((record) => record.runId),
+          version,
+        );
+        this.packageSessionSnapshots.delete(capabilityId);
+      } catch (error) {
+        for (const runId of reactivated.reverse())
+          await this.deactivateCapability(runId, capabilityId).catch(
+            () => undefined,
+          );
+        this.dependencies.repository.restoreSessionCapabilities(snapshot);
+        throw error;
+      }
+    } finally {
+      this.packageSessionOperations.delete(capabilityId);
     }
   }
 

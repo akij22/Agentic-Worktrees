@@ -284,6 +284,14 @@ describe("CapabilityService", () => {
     await expect(service.assertRunsIdle(["run-1"])).rejects.toMatchObject({
       code: "activation_failed",
     });
+    await expect(
+      service.deactivateRuns(webEntry.manifest.id),
+    ).rejects.toMatchObject({
+      code: "activation_failed",
+    });
+    await expect(
+      service.reactivateRuns(webEntry.manifest.id, webEntry.manifest.version),
+    ).rejects.toThrow("No package session deactivation is pending");
     const bundledService = new CapabilityService({
       catalog: testCatalog,
       repository,
@@ -349,6 +357,128 @@ describe("CapabilityService", () => {
     expect(
       repository.getSessionCapability("run-1", webEntry.manifest.id),
     ).toMatchObject({ status: "active", version: webEntry.manifest.version });
+  });
+
+  it("serializes concurrent package coordination before snapshot mutation", async () => {
+    const repository = new CapabilityRepository(sqlite);
+    repository.transitionSessionCapability({
+      runId: "run-1",
+      capabilityId: webEntry.manifest.id,
+      version: webEntry.manifest.version,
+      to: "pending_activation",
+    });
+    repository.transitionSessionCapability({
+      runId: "run-1",
+      capabilityId: webEntry.manifest.id,
+      version: webEntry.manifest.version,
+      to: "active",
+    });
+    let releaseIdle!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      releaseIdle = resolve;
+    });
+    const service = new CapabilityService({
+      catalog: managedCatalog,
+      repository,
+      credentials: {} as never,
+      hosts: {
+        setActiveCapabilities: vi.fn().mockResolvedValue([]),
+        stopHost: vi.fn(),
+      } as never,
+      activator: {
+        isAgentIdle: vi.fn(async () => {
+          await waiting;
+          return true;
+        }),
+        remove: vi.fn(),
+      } as never,
+      getAgentKind: vi.fn().mockResolvedValue("codex"),
+    });
+    const first = service.deactivateRuns(webEntry.manifest.id);
+    await Promise.resolve();
+    await expect(service.deactivateRuns(webEntry.manifest.id)).rejects.toThrow(
+      "already in progress",
+    );
+    await expect(
+      service.reactivateRuns(webEntry.manifest.id, webEntry.manifest.version),
+    ).rejects.toThrow("already in progress");
+    releaseIdle();
+    await first;
+    expect(
+      repository.listSessionCapabilitiesByCapabilityId(webEntry.manifest.id),
+    ).toHaveLength(1);
+  });
+
+  it("rolls back already reactivated hosts and providers when the second run fails", async () => {
+    const now = Date.now();
+    sqlite
+      .prepare(
+        `INSERT INTO runs (id, repository_id, worktree_id, title, prompt, status, created_at, updated_at) VALUES ('run-2', 'r', 'w', 'Run 2', '', 'idle', ?, ?)`,
+      )
+      .run(now, now);
+    const repository = new CapabilityRepository(sqlite);
+    repository.upsertInstallation({
+      capabilityId: webEntry.manifest.id,
+      version: webEntry.manifest.version,
+      permissionDigest: permissionDigest(webEntry.manifest),
+      configured: true,
+    });
+    for (const runId of ["run-1", "run-2"]) {
+      repository.transitionSessionCapability({
+        runId,
+        capabilityId: webEntry.manifest.id,
+        version: webEntry.manifest.version,
+        to: "pending_activation",
+      });
+      repository.transitionSessionCapability({
+        runId,
+        capabilityId: webEntry.manifest.id,
+        version: webEntry.manifest.version,
+        to: "active",
+      });
+    }
+    const hosts = {
+      setActiveCapabilities: vi.fn().mockResolvedValue(["web_search"]),
+      stopHost: vi.fn(),
+    };
+    const remove = vi.fn().mockResolvedValue("reloaded");
+    const apply = vi
+      .fn()
+      .mockResolvedValueOnce("reloaded")
+      .mockRejectedValueOnce(new Error("second provider failed"))
+      .mockResolvedValue("reloaded");
+    const service = new CapabilityService({
+      catalog: managedCatalog,
+      repository,
+      credentials: {} as never,
+      hosts: hosts as never,
+      activator: {
+        isAgentIdle: vi.fn().mockResolvedValue(true),
+        prepareSession: vi.fn(),
+        apply,
+        remove,
+      } as never,
+      getAgentKind: vi.fn().mockResolvedValue("codex"),
+    });
+    await service.deactivateRuns(webEntry.manifest.id);
+    await expect(
+      service.reactivateRuns(webEntry.manifest.id, webEntry.manifest.version),
+    ).rejects.toBeDefined();
+    expect(
+      repository
+        .listSessionCapabilitiesByCapabilityId(webEntry.manifest.id)
+        .map((record) => [record.runId, record.status]),
+    ).toEqual([
+      ["run-1", "inactive"],
+      ["run-2", "inactive"],
+    ]);
+    expect(remove).toHaveBeenCalledTimes(4);
+    expect(remove).toHaveBeenLastCalledWith("run-1");
+    expect(
+      hosts.setActiveCapabilities.mock.calls.some(
+        ([runId]) => runId === "run-1",
+      ),
+    ).toBe(true);
   });
 
   it("restores run versions and already reloaded providers when a later reload fails", async () => {

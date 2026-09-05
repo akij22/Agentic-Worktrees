@@ -23,3 +23,14 @@ Task 8 plus repository regression: 9 files / 91 tests passed.
 Task 7 regression: 7 files / 142 tests passed.
 Typecheck: changed Task 9A files pass; only the known unrelated CodingAgentSession.tsx:387 skillInvocations Props diagnostic remains.
 ```
+
+## Review fix — snapshot ordering, rollback, serialization, immutable time
+
+- `deactivateRuns` now completes the all-runs idle gate before creating/storing its rollback snapshot. Every pre-snapshot rejection clears attempt-local state, so `reactivateRuns` cannot act on an unperformed deactivation.
+- Reactivation tracks successfully restored runs. If a later host/provider fails, those runs are deactivated through the existing rollback boundary before exact SQLite restoration, keeping provider/host and DB state aligned.
+- Deactivate/reactivate coordination uses a per-Capability operation token; concurrent calls fail deterministically before snapshot mutation or host/DB interleaving.
+- Session snapshots expose numeric timestamp primitives rather than mutable `Date` objects, and freeze each record and records array.
+
+Direct additions cover idle rejection followed by forbidden reactivate, concurrent deactivate/reactivate exclusion, second-run reactivation failure with provider rollback and exact inactive DB restoration, and timestamp/record mutation rejection.
+
+Verification: focused Task 9A **2 files / 19 tests passed**; Task 8+repository **9 files / 93 tests passed**; Task 7 **7 files / 142 tests passed**; typecheck retains only the known unrelated `CodingAgentSession.tsx:387` blocker.
