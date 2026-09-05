@@ -42,3 +42,22 @@ Coordinator deactivation state now stores an opaque UUID token, monotonic servic
 Direct deterministic coverage externally changes the inactive session version between deactivation and reactivation, then asserts rejection, preservation of the external state, and zero reactivation host/provider calls. Existing concurrency coverage proves overlapping deactivate/reactivate cannot replace the revision-bound snapshot.
 
 Verification: focused Task 9A **2 files / 20 tests passed**; Task 8+repository **9 files / 94 tests passed**; Task 7 **7 files / 142 tests passed**; typecheck retains only the known unrelated `CodingAgentSession.tsx:387` blocker.
+
+## Final re-review fix — compare-and-restore across asynchronous work
+
+- `src/main/capabilities/capability-repository.ts`: transactional conditional restore/version-update primitives compare the complete association identity/status/version set before writes.
+- `src/main/capabilities/capability-service.ts`: coordinator guards retain token/revision plus the full expected immutable session snapshot, re-read before transitions and compensation/restore, and advance only after synchronous owned writes. Guarding the existing activation/deactivation transitions is necessary: otherwise those paths overwrite external status/error/timestamps before the outer rollback check. Pending snapshot deletion and version publication are also conditional; conflicts retain the pending snapshot and return stable `activation_failed / Capability session rollback conflicted.` with only safe event/code logging.
+- `src/main/capabilities/capability-service.test.ts`: explicit host/provider entry barriers replace microtask timing assumptions. Mutations during failed deactivation, deactivation host compensation, successful reactivation and failed reactivation preserve the exact external SQLite snapshot and reject stale work. Pending snapshot retention is asserted, and the original pre-reactivation stale-state regression remains.
+- `src/main/capabilities/capability-repository.test.ts`: real SQLite conditional restore/update rejection and successful matching restoration.
+
+TDD RED: barrier-based reactivation success/failure tests both failed because external `pending_activation` was overwritten with `inactive`/`activation_failed`. GREEN: guarded transitions and compare-and-restore preserve exact records.
+
+Verification:
+- Task 9A: **2 files / 25 tests passed**.
+- Task 7 regression: **7 files / 143 tests passed**.
+- Task 8 + repository: **9 files / 99 tests passed**.
+- Typecheck: only known `CodingAgentSession.tsx:387` missing `skillInvocations` Props blocker.
+- Global lint blocked by duplicate parent/worktree `eslint-plugin-import`; explicit local-config lint on changed TS files passes with one existing repository default-import warning.
+- `git diff --check` passed. No renderer/schema changes; no network/subagents. Graphify artifacts are absent in this worktree.
+
+On conflict the coordinator intentionally fails closed and retains its pending snapshot. Host/provider state may require reconciliation; it does not force external database state back to an old snapshot. No update/remove orchestration added.

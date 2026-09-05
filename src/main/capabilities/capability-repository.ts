@@ -133,6 +133,13 @@ export interface SessionCapabilitySnapshotRecord extends Omit<
   readonly activatedAt?: number;
   readonly deactivatedAt?: number;
 }
+export interface SessionCapabilityIdentity {
+  readonly id: string;
+  readonly runId: string;
+  readonly capabilityId: string;
+  readonly version: string;
+  readonly status: PersistedCapabilityStatus;
+}
 export interface SessionCapabilitySnapshot {
   readonly capabilityId: string;
   readonly records: readonly Readonly<SessionCapabilitySnapshotRecord>[];
@@ -395,6 +402,19 @@ export class CapabilityRepository {
     });
   }
 
+  updateSessionCapabilityVersionsIfMatches(
+    capabilityId: string,
+    expected: readonly SessionCapabilityIdentity[],
+    runIds: readonly string[],
+    version: string,
+  ): boolean {
+    return this.sqlite.transaction(() => {
+      if (!this.sessionCapabilitiesMatch(capabilityId, expected)) return false;
+      this.updateSessionCapabilityVersions(capabilityId, runIds, version);
+      return true;
+    })();
+  }
+
   updateSessionCapabilityVersions(
     capabilityId: string,
     runIds: readonly string[],
@@ -413,6 +433,39 @@ export class CapabilityRepository {
             "Capability session could not be updated.",
           );
       }
+    })();
+  }
+
+  sessionCapabilitiesMatch(
+    capabilityId: string,
+    expected: readonly SessionCapabilityIdentity[],
+  ): boolean {
+    const current = this.listSessionCapabilitiesByCapabilityId(capabilityId);
+    return (
+      current.length === expected.length &&
+      current.every((record, index) => {
+        const wanted = expected[index];
+        return (
+          wanted !== undefined &&
+          record.id === wanted.id &&
+          record.runId === wanted.runId &&
+          record.capabilityId === wanted.capabilityId &&
+          record.version === wanted.version &&
+          record.status === wanted.status
+        );
+      })
+    );
+  }
+
+  restoreSessionCapabilitiesIfMatches(
+    expected: readonly SessionCapabilityIdentity[],
+    snapshot: SessionCapabilitySnapshot,
+  ): boolean {
+    return this.sqlite.transaction(() => {
+      if (!this.sessionCapabilitiesMatch(snapshot.capabilityId, expected))
+        return false;
+      this.restoreSessionCapabilities(snapshot);
+      return true;
     })();
   }
 

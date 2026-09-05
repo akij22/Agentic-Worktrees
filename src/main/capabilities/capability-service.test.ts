@@ -359,6 +359,160 @@ describe("CapabilityService", () => {
     ).toMatchObject({ status: "active", version: webEntry.manifest.version });
   });
 
+  it.each([false, true])(
+    "preserves external state during deactivation (rollback work: %s)",
+    async (duringRollback) => {
+      const repository = new CapabilityRepository(sqlite);
+      repository.transitionSessionCapability({
+        runId: "run-1",
+        capabilityId: webEntry.manifest.id,
+        version: webEntry.manifest.version,
+        to: "pending_activation",
+      });
+      repository.transitionSessionCapability({
+        runId: "run-1",
+        capabilityId: webEntry.manifest.id,
+        version: webEntry.manifest.version,
+        to: "active",
+      });
+      let enteredHost!: () => void;
+      const hostEntered = new Promise<void>((resolve) => {
+        enteredHost = resolve;
+      });
+      let rejectHost!: (error: Error) => void;
+      const hostWork = new Promise<string[]>((_resolve, reject) => {
+        rejectHost = reject;
+      });
+      const logError = vi.fn();
+      let hostCalls = 0;
+      const service = new CapabilityService({
+        catalog: managedCatalog,
+        repository,
+        credentials: {} as never,
+        hosts: {
+          setActiveCapabilities: vi.fn(async () => {
+            if (duringRollback && ++hostCalls === 1)
+              throw new Error("host failure");
+            enteredHost();
+            return hostWork;
+          }),
+          stopHost: vi.fn(),
+        } as never,
+        activator: {
+          isAgentIdle: vi.fn().mockResolvedValue(true),
+          apply: vi.fn(),
+          remove: vi.fn(),
+        } as never,
+        getAgentKind: vi.fn().mockResolvedValue("codex"),
+        logError,
+      });
+      const deactivation = service.deactivateRuns(webEntry.manifest.id);
+      await hostEntered;
+      repository.updateSessionCapabilityVersions(
+        webEntry.manifest.id,
+        ["run-1"],
+        "8.8.8",
+      );
+      const external = repository.snapshotSessionCapabilities(
+        webEntry.manifest.id,
+      );
+      rejectHost(new Error("host failed"));
+      await expect(deactivation).rejects.toThrow("rollback conflicted");
+      expect(
+        repository.getSessionCapability("run-1", webEntry.manifest.id)?.version,
+      ).toBe("8.8.8");
+      expect(
+        repository.snapshotSessionCapabilities(webEntry.manifest.id),
+      ).toEqual(external);
+      await expect(
+        service.deactivateRuns(webEntry.manifest.id),
+      ).rejects.toThrow("already pending");
+      expect(logError).toHaveBeenCalledWith(
+        "capability.package.rollback.conflict",
+        "activation_failed",
+      );
+    },
+  );
+
+  it.each([false, true])(
+    "preserves external state during reactivation work (failure: %s)",
+    async (fail) => {
+      const repository = new CapabilityRepository(sqlite);
+      repository.upsertInstallation({
+        capabilityId: webEntry.manifest.id,
+        version: webEntry.manifest.version,
+        permissionDigest: permissionDigest(webEntry.manifest),
+        configured: true,
+      });
+      repository.transitionSessionCapability({
+        runId: "run-1",
+        capabilityId: webEntry.manifest.id,
+        version: webEntry.manifest.version,
+        to: "pending_activation",
+      });
+      repository.transitionSessionCapability({
+        runId: "run-1",
+        capabilityId: webEntry.manifest.id,
+        version: webEntry.manifest.version,
+        to: "active",
+      });
+      const setActiveCapabilities = vi.fn().mockResolvedValue(["web_search"]);
+      let releaseApply!: () => void;
+      const applying = new Promise<void>((resolve) => {
+        releaseApply = resolve;
+      });
+      let enteredApply!: () => void;
+      const applyEntered = new Promise<void>((resolve) => {
+        enteredApply = resolve;
+      });
+      const apply = vi.fn(async () => {
+        enteredApply();
+        await applying;
+        if (fail) throw new Error("provider failed");
+      });
+      const service = new CapabilityService({
+        catalog: managedCatalog,
+        repository,
+        credentials: {} as never,
+        hosts: { setActiveCapabilities, stopHost: vi.fn() } as never,
+        activator: {
+          isAgentIdle: vi.fn().mockResolvedValue(true),
+          prepareSession: vi.fn(),
+          apply,
+          remove: vi.fn(),
+        } as never,
+        getAgentKind: vi.fn().mockResolvedValue("codex"),
+      });
+      await service.deactivateRuns(webEntry.manifest.id);
+      const reactivation = service.reactivateRuns(
+        webEntry.manifest.id,
+        webEntry.manifest.version,
+      );
+      await applyEntered;
+      repository.updateSessionCapabilityVersions(
+        webEntry.manifest.id,
+        ["run-1"],
+        "9.9.9",
+      );
+      const external = repository.snapshotSessionCapabilities(
+        webEntry.manifest.id,
+      );
+      releaseApply();
+      await expect(reactivation).rejects.toThrow("rollback conflicted");
+      expect(
+        repository.getSessionCapability("run-1", webEntry.manifest.id),
+      ).toMatchObject({ version: "9.9.9" });
+      expect(
+        repository.snapshotSessionCapabilities(webEntry.manifest.id),
+      ).toEqual(external);
+      expect(setActiveCapabilities).toHaveBeenCalled();
+      expect(apply).toHaveBeenCalled();
+      await expect(
+        service.deactivateRuns(webEntry.manifest.id),
+      ).rejects.toThrow("already pending");
+    },
+  );
+
   it("rejects a stale deactivation snapshot after external session state changes", async () => {
     const repository = new CapabilityRepository(sqlite);
     repository.upsertInstallation({

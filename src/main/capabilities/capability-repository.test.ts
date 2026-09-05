@@ -30,6 +30,49 @@ describe("CapabilityRepository", () => {
   });
   afterEach(() => sqlite.close());
 
+  it("compares the complete association set before transactional restore and version updates", () => {
+    const capabilityId = "agentic-worktrees.web-search";
+    repository.transitionSessionCapability({
+      runId: "run-1",
+      capabilityId,
+      version: "1.0.0",
+      to: "inactive",
+    });
+    const original = repository.snapshotSessionCapabilities(capabilityId);
+    repository.updateSessionCapabilityVersions(
+      capabilityId,
+      ["run-1"],
+      "2.0.0",
+    );
+    const external = repository.snapshotSessionCapabilities(capabilityId);
+    expect(
+      repository.restoreSessionCapabilitiesIfMatches(
+        original.records,
+        original,
+      ),
+    ).toBe(false);
+    expect(
+      repository.updateSessionCapabilityVersionsIfMatches(
+        capabilityId,
+        original.records,
+        ["run-1"],
+        "3.0.0",
+      ),
+    ).toBe(false);
+    expect(repository.snapshotSessionCapabilities(capabilityId)).toEqual(
+      external,
+    );
+    expect(
+      repository.restoreSessionCapabilitiesIfMatches(
+        external.records,
+        original,
+      ),
+    ).toBe(true);
+    expect(repository.snapshotSessionCapabilities(capabilityId)).toEqual(
+      original,
+    );
+  });
+
   it("initializes defaults and marks required configuration accurately", () => {
     const ready = repository.initializeInstalledConfiguration(
       {

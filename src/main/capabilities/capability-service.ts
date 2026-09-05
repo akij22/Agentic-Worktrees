@@ -24,6 +24,7 @@ import type { CapabilityHostManager } from "./capability-host-manager";
 import type {
   CapabilityRepository,
   SessionCapabilityRecord,
+  SessionCapabilityIdentity,
 } from "./capability-repository";
 import { prepareCapabilityConfiguration } from "./capability-configuration";
 import type { CapabilitySessionPackageCoordinator } from "./capability-session-package-coordinator";
@@ -246,7 +247,17 @@ export class CapabilityService implements CapabilitySessionPackageCoordinator {
   async activateCapability(
     runId: string,
     capabilityId: string,
+    coordination?: { check(): void; advance(): void },
   ): Promise<CapabilitySessionStateDto> {
+    const transition: CapabilityRepository["transitionSessionCapability"] = (
+      input,
+    ) => {
+      coordination?.check();
+      const record =
+        this.dependencies.repository.transitionSessionCapability(input);
+      coordination?.advance();
+      return record;
+    };
     const capability = this.getCatalog(capabilityId);
     const installation =
       this.dependencies.repository.getInstallation(capabilityId);
@@ -288,7 +299,7 @@ export class CapabilityService implements CapabilitySessionPackageCoordinator {
       .listSessionCapabilities(runId)
       .filter((item) => item.status === "active")
       .map((item) => item.capabilityId);
-    const pending = this.dependencies.repository.transitionSessionCapability({
+    const pending = transition({
       runId,
       capabilityId,
       version: capability.manifest.version,
@@ -298,13 +309,12 @@ export class CapabilityService implements CapabilitySessionPackageCoordinator {
     try {
       await this.dependencies.activator.prepareSession(runId, agentKind);
       if (agentKind === "opencode") {
-        const reloading =
-          this.dependencies.repository.transitionSessionCapability({
-            runId,
-            capabilityId,
-            version: capability.manifest.version,
-            to: "reloading",
-          });
+        const reloading = transition({
+          runId,
+          capabilityId,
+          version: capability.manifest.version,
+          to: "reloading",
+        });
         this.emit(reloading);
       }
       const settings = this.hostSettings([...previousIds, capabilityId]);
@@ -314,7 +324,7 @@ export class CapabilityService implements CapabilitySessionPackageCoordinator {
         settings,
       );
       await this.dependencies.activator.apply(runId, toolNames);
-      const active = this.dependencies.repository.transitionSessionCapability({
+      const active = transition({
         runId,
         capabilityId,
         version: capability.manifest.version,
@@ -348,7 +358,7 @@ export class CapabilityService implements CapabilitySessionPackageCoordinator {
       }
       const code =
         error instanceof CapabilityError ? error.code : "activation_failed";
-      const failed = this.dependencies.repository.transitionSessionCapability({
+      const failed = transition({
         runId,
         capabilityId,
         version: capability.manifest.version,
@@ -363,7 +373,17 @@ export class CapabilityService implements CapabilitySessionPackageCoordinator {
   async deactivateCapability(
     runId: string,
     capabilityId: string,
+    coordination?: { check(): void; advance(): void },
   ): Promise<CapabilitySessionStateDto> {
+    const transition: CapabilityRepository["transitionSessionCapability"] = (
+      input,
+    ) => {
+      coordination?.check();
+      const record =
+        this.dependencies.repository.transitionSessionCapability(input);
+      coordination?.advance();
+      return record;
+    };
     const capability = this.getCatalog(capabilityId);
     const current = this.dependencies.repository.getSessionCapability(
       runId,
@@ -372,7 +392,7 @@ export class CapabilityService implements CapabilitySessionPackageCoordinator {
     if (!current || current.status === "inactive")
       return sessionDto(
         current ??
-          this.dependencies.repository.transitionSessionCapability({
+          transition({
             runId,
             capabilityId,
             version: capability.manifest.version,
@@ -386,7 +406,7 @@ export class CapabilityService implements CapabilitySessionPackageCoordinator {
         "Capabilities can only be changed between turns.",
       );
     const agentKind = await this.dependencies.getAgentKind(runId);
-    const pending = this.dependencies.repository.transitionSessionCapability({
+    const pending = transition({
       runId,
       capabilityId,
       version: capability.manifest.version,
@@ -394,13 +414,12 @@ export class CapabilityService implements CapabilitySessionPackageCoordinator {
     });
     this.emit(pending);
     if (agentKind === "opencode") {
-      const reloading =
-        this.dependencies.repository.transitionSessionCapability({
-          runId,
-          capabilityId,
-          version: capability.manifest.version,
-          to: "reloading",
-        });
+      const reloading = transition({
+        runId,
+        capabilityId,
+        version: capability.manifest.version,
+        to: "reloading",
+      });
       this.emit(reloading);
     }
     const remaining = this.dependencies.repository
@@ -417,14 +436,12 @@ export class CapabilityService implements CapabilitySessionPackageCoordinator {
         this.hostSettings(remaining),
       );
       await this.dependencies.activator.remove(runId);
-      const inactive = this.dependencies.repository.transitionSessionCapability(
-        {
-          runId,
-          capabilityId,
-          version: capability.manifest.version,
-          to: "inactive",
-        },
-      );
+      const inactive = transition({
+        runId,
+        capabilityId,
+        version: capability.manifest.version,
+        to: "inactive",
+      });
       if (remaining.length === 0) this.dependencies.hosts.stopHost(runId);
       this.emit(inactive);
       return sessionDto(inactive, capability);
@@ -450,7 +467,7 @@ export class CapabilityService implements CapabilitySessionPackageCoordinator {
       }
       const code =
         error instanceof CapabilityError ? error.code : "activation_failed";
-      const failed = this.dependencies.repository.transitionSessionCapability({
+      const failed = transition({
         runId,
         capabilityId,
         version: capability.manifest.version,
@@ -545,6 +562,17 @@ export class CapabilityService implements CapabilitySessionPackageCoordinator {
     return this.reloadRuns(capabilityId, version);
   }
 
+  private rollbackConflict(): CapabilityError {
+    this.dependencies.logError?.(
+      "capability.package.rollback.conflict",
+      "activation_failed",
+    );
+    return new CapabilityError(
+      "activation_failed",
+      "Capability session rollback conflicted.",
+    );
+  }
+
   private sessionStateMatchesDeactivation(
     capabilityId: string,
     snapshot: ReturnType<CapabilityRepository["snapshotSessionCapabilities"]>,
@@ -564,6 +592,53 @@ export class CapabilityService implements CapabilitySessionPackageCoordinator {
           (before.status === "active" ? "inactive" : before.status)
       );
     });
+  }
+
+  private expectedSessionState(
+    snapshot: ReturnType<CapabilityRepository["snapshotSessionCapabilities"]>,
+    statusFor: (
+      record: (typeof snapshot.records)[number],
+    ) => SessionCapabilityIdentity["status"],
+    version?: string,
+  ): SessionCapabilityIdentity[] {
+    return snapshot.records.map((record) => ({
+      id: record.id,
+      runId: record.runId,
+      capabilityId: record.capabilityId,
+      version: version ?? record.version,
+      status: statusFor(record),
+    }));
+  }
+
+  private sessionCoordinationGuard(
+    capabilityId: string,
+    marker: { token: string; revision: number },
+  ) {
+    let expected =
+      this.dependencies.repository.snapshotSessionCapabilities(
+        capabilityId,
+      ).records;
+    return {
+      check: () => {
+        const current = this.packageSessionSnapshots.get(capabilityId);
+        if (
+          current?.token !== marker.token ||
+          current.revision !== marker.revision ||
+          JSON.stringify(
+            this.dependencies.repository.snapshotSessionCapabilities(
+              capabilityId,
+            ).records,
+          ) !== JSON.stringify(expected)
+        )
+          throw this.rollbackConflict();
+      },
+      advance: () => {
+        expected =
+          this.dependencies.repository.snapshotSessionCapabilities(
+            capabilityId,
+          ).records;
+      },
+    };
   }
 
   async deactivateRuns(capabilityId: string): Promise<void> {
@@ -593,18 +668,39 @@ export class CapabilityService implements CapabilitySessionPackageCoordinator {
         snapshot,
       };
       this.packageSessionSnapshots.set(capabilityId, marker);
+      const coordination = this.sessionCoordinationGuard(capabilityId, marker);
       const deactivated: string[] = [];
+      let attempting: string | undefined;
       try {
         for (const runId of runIds) {
-          await this.deactivateCapability(runId, capabilityId);
+          attempting = runId;
+          await this.deactivateCapability(runId, capabilityId, coordination);
           deactivated.push(runId);
+          attempting = undefined;
         }
       } catch (error) {
+        coordination.check();
         for (const runId of deactivated.reverse())
-          await this.activateCapability(runId, capabilityId).catch(
-            () => undefined,
-          );
-        this.dependencies.repository.restoreSessionCapabilities(snapshot);
+          await this.activateCapability(
+            runId,
+            capabilityId,
+            coordination,
+          ).catch(() => undefined);
+        coordination.check();
+        const expected = this.expectedSessionState(snapshot, (record) =>
+          deactivated.includes(record.runId)
+            ? "active"
+            : record.runId === attempting
+              ? "activation_failed"
+              : record.status,
+        );
+        if (
+          !this.dependencies.repository.restoreSessionCapabilitiesIfMatches(
+            expected,
+            snapshot,
+          )
+        )
+          throw this.rollbackConflict();
         const current = this.packageSessionSnapshots.get(capabilityId);
         if (
           current?.token === marker.token &&
@@ -663,33 +759,71 @@ export class CapabilityService implements CapabilitySessionPackageCoordinator {
         );
       const snapshot =
         this.dependencies.repository.snapshotSessionCapabilities(capabilityId);
+      const coordination = this.sessionCoordinationGuard(capabilityId, prior);
       const reactivated: string[] = [];
+      let attempting: string | undefined;
       try {
         for (const record of records) {
-          await this.activateCapability(record.runId, capabilityId);
+          attempting = record.runId;
+          await this.activateCapability(
+            record.runId,
+            capabilityId,
+            coordination,
+          );
           reactivated.push(record.runId);
+          attempting = undefined;
         }
-        this.dependencies.repository.updateSessionCapabilityVersions(
-          capabilityId,
-          records.map((record) => record.runId),
-          version,
+        coordination.check();
+        const beforeVersionUpdate = this.expectedSessionState(
+          prior.snapshot,
+          (record) => record.status,
         );
+        if (
+          !this.dependencies.repository.updateSessionCapabilityVersionsIfMatches(
+            capabilityId,
+            beforeVersionUpdate,
+            records.map((record) => record.runId),
+            version,
+          )
+        )
+          throw this.rollbackConflict();
         const current = this.packageSessionSnapshots.get(capabilityId);
+        const completed = prior.snapshot.records.map((record) => ({
+          id: record.id,
+          runId: record.runId,
+          capabilityId: record.capabilityId,
+          version: record.status === "active" ? version : record.version,
+          status: record.status,
+        }));
         if (
           current?.token !== prior.token ||
-          current.revision !== prior.revision
+          current.revision !== prior.revision ||
+          !this.dependencies.repository.sessionCapabilitiesMatch(
+            capabilityId,
+            completed,
+          )
         )
-          throw new CapabilityError(
-            "activation_failed",
-            "Capability session coordination revision changed.",
-          );
+          throw this.rollbackConflict();
         this.packageSessionSnapshots.delete(capabilityId);
       } catch (error) {
+        coordination.check();
         for (const runId of reactivated.reverse())
-          await this.deactivateCapability(runId, capabilityId).catch(
-            () => undefined,
-          );
-        this.dependencies.repository.restoreSessionCapabilities(snapshot);
+          await this.deactivateCapability(
+            runId,
+            capabilityId,
+            coordination,
+          ).catch(() => undefined);
+        coordination.check();
+        const expected = this.expectedSessionState(snapshot, (record) =>
+          record.runId === attempting ? "activation_failed" : record.status,
+        );
+        if (
+          !this.dependencies.repository.restoreSessionCapabilitiesIfMatches(
+            expected,
+            snapshot,
+          )
+        )
+          throw this.rollbackConflict();
         throw error;
       }
     } finally {
