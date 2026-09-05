@@ -25,6 +25,7 @@ import type {
   SessionCapabilityRecord,
 } from "./capability-repository";
 import { prepareCapabilityConfiguration } from "./capability-configuration";
+import type { CapabilitySessionPackageCoordinator } from "./capability-session-package-coordinator";
 
 export interface CapabilityServiceDependencies {
   repository: CapabilityRepository;
@@ -81,7 +82,11 @@ function sessionDto(
   };
 }
 
-export class CapabilityService {
+export class CapabilityService implements CapabilitySessionPackageCoordinator {
+  private readonly packageSessionSnapshots = new Map<
+    string,
+    ReturnType<CapabilityRepository["snapshotSessionCapabilities"]>
+  >();
   private readonly listeners = new Set<
     (event: CapabilityChangedEventDto) => void
   >();
@@ -89,8 +94,12 @@ export class CapabilityService {
   private listCatalog(): readonly CapabilityCatalogEntry[] {
     return this.dependencies.catalog?.list() ?? listBundledCapabilities();
   }
-  private getCatalog(id: string): CapabilityCatalogEntry {
-    return this.dependencies.catalog?.get(id) ?? getBundledCapability(id);
+  private getCatalog(id: string, version?: string): CapabilityCatalogEntry {
+    const entry =
+      this.dependencies.catalog?.get(id, version) ?? getBundledCapability(id);
+    if (version !== undefined && entry.manifest.version !== version)
+      throw new CapabilityError("invalid_input", "Unknown capability version.");
+    return entry;
   }
 
   listCapabilities(runId?: string): CapabilitySummaryDto[] {
@@ -443,6 +452,151 @@ export class CapabilityService {
       });
       this.emit(failed);
       throw new CapabilityError(code, "Capability deactivation failed.");
+    }
+  }
+
+  listActiveRuns(capabilityId: string): readonly string[] {
+    return Object.freeze(
+      this.dependencies.repository.listActiveRunsByCapabilityId(capabilityId),
+    );
+  }
+
+  activeRunCount(capabilityId: string): number {
+    return this.listActiveRuns(capabilityId).length;
+  }
+
+  async assertRunsIdle(runIds: readonly string[]): Promise<void> {
+    for (const runId of runIds)
+      if (!(await this.dependencies.activator.isAgentIdle(runId)))
+        throw new CapabilityError(
+          "activation_failed",
+          "All affected capability sessions must be idle.",
+        );
+  }
+
+  assertManagedCapability(capabilityId: string): void {
+    if (this.getCatalog(capabilityId).source !== "npm")
+      throw new CapabilityError(
+        "invalid_input",
+        "Bundled capabilities cannot be managed as packages.",
+      );
+  }
+
+  async reloadRuns(capabilityId: string, version: string): Promise<void> {
+    this.assertManagedCapability(capabilityId);
+    this.getCatalog(capabilityId, version);
+    const runIds = [...this.listActiveRuns(capabilityId)];
+    await this.assertRunsIdle(runIds);
+    const reloaded: string[] = [];
+    try {
+      for (const runId of runIds) {
+        const activeIds = this.dependencies.repository
+          .listSessionCapabilities(runId)
+          .filter((record) => record.status === "active")
+          .map((record) => record.capabilityId);
+        const tools = await this.dependencies.hosts.setActiveCapabilities(
+          runId,
+          activeIds,
+          this.hostSettings(activeIds),
+        );
+        await this.dependencies.activator.apply(runId, tools);
+        reloaded.push(runId);
+      }
+      this.dependencies.repository.updateSessionCapabilityVersions(
+        capabilityId,
+        runIds,
+        version,
+      );
+    } catch {
+      for (const runId of reloaded.reverse()) {
+        try {
+          const activeIds = this.dependencies.repository
+            .listSessionCapabilities(runId)
+            .filter((record) => record.status === "active")
+            .map((record) => record.capabilityId);
+          const tools = await this.dependencies.hosts.setActiveCapabilities(
+            runId,
+            activeIds,
+            this.hostSettings(activeIds),
+          );
+          await this.dependencies.activator.apply(runId, tools);
+        } catch {
+          this.dependencies.logError?.(
+            "capability.package.reload.rollback.failed",
+            "activation_failed",
+          );
+        }
+      }
+      throw new CapabilityError(
+        "agent_reload_failed",
+        "Capability sessions could not be reloaded.",
+      );
+    }
+  }
+
+  restoreRuns(capabilityId: string, version: string): Promise<void> {
+    return this.reloadRuns(capabilityId, version);
+  }
+
+  async deactivateRuns(capabilityId: string): Promise<void> {
+    this.assertManagedCapability(capabilityId);
+    const snapshot =
+      this.dependencies.repository.snapshotSessionCapabilities(capabilityId);
+    this.packageSessionSnapshots.set(capabilityId, snapshot);
+    const runIds = [...this.listActiveRuns(capabilityId)];
+    await this.assertRunsIdle(runIds);
+    const deactivated: string[] = [];
+    try {
+      for (const runId of runIds) {
+        await this.deactivateCapability(runId, capabilityId);
+        deactivated.push(runId);
+      }
+    } catch (error) {
+      for (const runId of deactivated.reverse())
+        await this.activateCapability(runId, capabilityId).catch(
+          () => undefined,
+        );
+      this.dependencies.repository.restoreSessionCapabilities(snapshot);
+      this.packageSessionSnapshots.delete(capabilityId);
+      throw error;
+    }
+  }
+
+  async reactivateRuns(capabilityId: string, version: string): Promise<void> {
+    this.assertManagedCapability(capabilityId);
+    this.getCatalog(capabilityId, version);
+    const prior = this.packageSessionSnapshots.get(capabilityId);
+    if (!prior)
+      throw new CapabilityError(
+        "invalid_input",
+        "No package session deactivation is pending.",
+      );
+    const activeRunIds = new Set(
+      prior.records
+        .filter((record) => record.status === "active")
+        .map((record) => record.runId),
+    );
+    const records = this.dependencies.repository
+      .listSessionCapabilitiesByCapabilityId(capabilityId)
+      .filter(
+        (record) =>
+          record.status === "inactive" && activeRunIds.has(record.runId),
+      );
+    await this.assertRunsIdle(records.map((record) => record.runId));
+    const snapshot =
+      this.dependencies.repository.snapshotSessionCapabilities(capabilityId);
+    try {
+      for (const record of records)
+        await this.activateCapability(record.runId, capabilityId);
+      this.dependencies.repository.updateSessionCapabilityVersions(
+        capabilityId,
+        records.map((record) => record.runId),
+        version,
+      );
+      this.packageSessionSnapshots.delete(capabilityId);
+    } catch (error) {
+      this.dependencies.repository.restoreSessionCapabilities(snapshot);
+      throw error;
     }
   }
 

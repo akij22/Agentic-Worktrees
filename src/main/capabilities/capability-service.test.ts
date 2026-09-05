@@ -12,6 +12,31 @@ import {
 import { webSearchManifest } from "@agentic-worktrees/web-search-capability";
 
 const webEntry = createBundledCapability(webSearchManifest, ["web_search"]);
+const managedWebEntry = {
+  ...webEntry,
+  source: "npm" as const,
+  trust: "community" as const,
+  reviewStatus: "unreviewed" as const,
+  packageName: "@agentic-worktrees/web-search",
+  runtime: {
+    kind: "managed" as const,
+    capabilityId: webEntry.manifest.id,
+    packageName: "@agentic-worktrees/web-search",
+    version: webEntry.manifest.version,
+    packageRoot: "/managed/web-search",
+    manifest: "capability.json",
+    entry: "dist/index.js",
+    contentDigest: "digest",
+  },
+};
+const managedCatalog = {
+  list: () => [managedWebEntry],
+  get: (id: string) => {
+    if (id !== managedWebEntry.manifest.id) throw new Error("unknown");
+    return managedWebEntry;
+  },
+  refresh: async () => undefined,
+};
 const testCatalog = {
   list: () => [...listBundledCapabilities(), webEntry],
   get: (id: string) =>
@@ -229,5 +254,153 @@ describe("CapabilityService", () => {
       repository.getSettings(id).some((setting) => setting.key === "exaApiKey"),
     ).toBe(false);
     expect(removeSecret).toHaveBeenCalledWith("old-secret");
+  });
+
+  it("enumerates active runs, enforces idle, and rejects bundled package coordination", async () => {
+    const repository = new CapabilityRepository(sqlite);
+    repository.transitionSessionCapability({
+      runId: "run-1",
+      capabilityId: webEntry.manifest.id,
+      version: webEntry.manifest.version,
+      to: "pending_activation",
+    });
+    repository.transitionSessionCapability({
+      runId: "run-1",
+      capabilityId: webEntry.manifest.id,
+      version: webEntry.manifest.version,
+      to: "active",
+    });
+    const idle = vi.fn().mockResolvedValue(false);
+    const service = new CapabilityService({
+      catalog: managedCatalog,
+      repository,
+      credentials: {} as never,
+      hosts: {} as never,
+      activator: { isAgentIdle: idle } as never,
+      getAgentKind: vi.fn(),
+    });
+    expect(service.listActiveRuns(webEntry.manifest.id)).toEqual(["run-1"]);
+    expect(service.activeRunCount(webEntry.manifest.id)).toBe(1);
+    await expect(service.assertRunsIdle(["run-1"])).rejects.toMatchObject({
+      code: "activation_failed",
+    });
+    const bundledService = new CapabilityService({
+      catalog: testCatalog,
+      repository,
+      credentials: {} as never,
+      hosts: {} as never,
+      activator: { isAgentIdle: idle } as never,
+      getAgentKind: vi.fn(),
+    });
+    expect(() =>
+      bundledService.assertManagedCapability("agentic-worktrees.url-fetch"),
+    ).toThrow("Bundled capabilities cannot be managed");
+  });
+
+  it("transactionally deactivates and reactivates managed runs without losing associations", async () => {
+    const repository = new CapabilityRepository(sqlite);
+    repository.upsertInstallation({
+      capabilityId: webEntry.manifest.id,
+      version: webEntry.manifest.version,
+      permissionDigest: permissionDigest(webEntry.manifest),
+      configured: true,
+    });
+    repository.transitionSessionCapability({
+      runId: "run-1",
+      capabilityId: webEntry.manifest.id,
+      version: webEntry.manifest.version,
+      to: "pending_activation",
+    });
+    repository.transitionSessionCapability({
+      runId: "run-1",
+      capabilityId: webEntry.manifest.id,
+      version: webEntry.manifest.version,
+      to: "active",
+    });
+    const service = new CapabilityService({
+      catalog: managedCatalog,
+      repository,
+      credentials: {} as never,
+      hosts: {
+        setActiveCapabilities: vi.fn().mockResolvedValue(["web_search"]),
+        stopHost: vi.fn(),
+      } as never,
+      activator: {
+        isAgentIdle: vi.fn().mockResolvedValue(true),
+        prepareSession: vi.fn(),
+        apply: vi.fn(),
+        remove: vi.fn(),
+      } as never,
+      getAgentKind: vi.fn().mockResolvedValue("codex"),
+    });
+    await service.deactivateRuns(webEntry.manifest.id);
+    expect(service.activeRunCount(webEntry.manifest.id)).toBe(0);
+    expect(
+      repository.getSessionCapability("run-1", webEntry.manifest.id)?.status,
+    ).toBe("inactive");
+    expect(
+      repository.listSessionCapabilitiesByCapabilityId(webEntry.manifest.id),
+    ).toHaveLength(1);
+    await service.reactivateRuns(
+      webEntry.manifest.id,
+      webEntry.manifest.version,
+    );
+    expect(service.activeRunCount(webEntry.manifest.id)).toBe(1);
+    expect(
+      repository.getSessionCapability("run-1", webEntry.manifest.id),
+    ).toMatchObject({ status: "active", version: webEntry.manifest.version });
+  });
+
+  it("restores run versions and already reloaded providers when a later reload fails", async () => {
+    const now = Date.now();
+    sqlite
+      .prepare(
+        `INSERT INTO runs (id, repository_id, worktree_id, title, prompt, status, created_at, updated_at) VALUES ('run-2', 'r', 'w', 'Run 2', '', 'idle', ?, ?)`,
+      )
+      .run(now, now);
+    const repository = new CapabilityRepository(sqlite);
+    for (const runId of ["run-1", "run-2"]) {
+      repository.transitionSessionCapability({
+        runId,
+        capabilityId: webEntry.manifest.id,
+        version: webEntry.manifest.version,
+        to: "pending_activation",
+      });
+      repository.transitionSessionCapability({
+        runId,
+        capabilityId: webEntry.manifest.id,
+        version: webEntry.manifest.version,
+        to: "active",
+      });
+    }
+    const setActiveCapabilities = vi
+      .fn()
+      .mockResolvedValueOnce(["web_search"])
+      .mockRejectedValueOnce(new Error("second reload failed"))
+      .mockResolvedValueOnce(["web_search"]);
+    const apply = vi.fn().mockResolvedValue("reloaded");
+    const service = new CapabilityService({
+      catalog: managedCatalog,
+      repository,
+      credentials: {} as never,
+      hosts: { setActiveCapabilities } as never,
+      activator: {
+        isAgentIdle: vi.fn().mockResolvedValue(true),
+        apply,
+      } as never,
+      getAgentKind: vi.fn(),
+    });
+    await expect(
+      service.reloadRuns(webEntry.manifest.id, webEntry.manifest.version),
+    ).rejects.toMatchObject({ code: "agent_reload_failed" });
+    expect(setActiveCapabilities).toHaveBeenCalledTimes(3);
+    expect(
+      repository
+        .listSessionCapabilitiesByCapabilityId(webEntry.manifest.id)
+        .map((record) => [record.runId, record.version, record.status]),
+    ).toEqual([
+      ["run-1", webEntry.manifest.version, "active"],
+      ["run-2", webEntry.manifest.version, "active"],
+    ]);
   });
 });
