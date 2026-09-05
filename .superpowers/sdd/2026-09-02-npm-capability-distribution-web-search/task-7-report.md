@@ -305,3 +305,71 @@ Lease coverage is now **15 direct tests**, including `delivers one typed termina
 - Focused service + lease + PackageLock: **3 files passed; 36 tests passed**.
 - Task 7 service, lease, lock, installer, catalog, and repositories: **7 files passed; 115 tests passed**.
 - `npm run typecheck`: changed Task 7 files typecheck; command remains blocked only by the pre-existing renderer `CodingAgentSession.tsx:387` missing `skillInvocations` prop diagnostic.
+
+## Task 7B2 — negative consent/install lifecycle, cancellation, setup, no activation
+
+### Lifecycle corrections
+
+- Install input is schema-parsed before its inspection ID is used. The exact consent tuple is consumed once; every mismatch terminates with `package_permission_denied` before executable verification.
+- Lease cancellation is now observed after acquisition and after static inspection, so cancellation cannot publish a late ready DTO. Accepted cancellation during executable verification aborts the owned signal and resolves the cancel caller while install/inspect receive the stable permission-denied terminal error.
+- Lease phases permit cancellation during `verifying` and reject it during `committing`, preserving the atomic installer boundary.
+- Executable verification identity is checked against Capability ID, version, staged content digest, and the exact ordered tool list before commit.
+- Installed detail DTOs, including nested settings, are recursively frozen.
+
+### Direct test evidence (52 focused tests)
+
+The focused service/lease suites increased from **29 to 52 tests** (**23 added**).
+
+New service cases:
+
+1. `rejects an unknown inspection without touching package work`
+2. `rejects an invalid install request before selecting a pending lease`
+3. `consumes a consent with mismatched package name without verification`
+4. `consumes a consent with mismatched version without verification`
+5. `consumes a consent with mismatched integrity without verification`
+6. `consumes a consent with mismatched permission digest without verification`
+7. `rejects verifier Capability ID mismatch before installer commit`
+8. `rejects verifier version mismatch before installer commit`
+9. `rejects verifier content digest mismatch before installer commit`
+10. `rejects verifier missing tool mismatch before installer commit`
+11. `rejects verifier changed tool mismatch before installer commit`
+12. `detects staged content mutation at the verifier boundary`
+13. `expires at exactly fifteen minutes and cannot be revived`
+14. `accepts one millisecond before the fifteen-minute deadline`
+15. `cancels an in-flight acquisition through its real AbortSignal`
+16. `cancels an in-flight verifier, skips commit, and records cancellation`
+17. `projects needs_setup for a required secret while retaining reviewed settings`
+18. `projects needs_setup for a required non-secret while retaining reviewed settings`
+19. `rejects cancellation after atomic commit begins`
+
+The successful integration case is explicitly named `installs in verify-then-commit order without creating or activating a session`; it asserts zero `session_capabilities` rows and untouched activation-boundary spies. The configured-repository case proves `ready` projection from persisted configuration. Existing direct lease race tests continue to cover duplicate accept, accept/cancel, accept/expiry, exact-once terminal outcome, and lock ownership.
+
+New lease cases:
+
+20. `cancels during acquisition without publishing readiness`
+21. `cancels after acquisition while static inspection is pending`
+22. `accepts cancellation during verification and resolves the cancel caller`
+23. `rejects cancellation after commit phase begins and completes once`
+
+Tuple failures assert verifier/installer exclusion, cleanup, release, coherent DB failure, schema-valid frozen events, and path-free errors. Verification failures assert no commit, cleanup/release, and coherent `package_verification_failed` persistence. Cancellation tests use real `AbortSignal` instances and deterministic deferred work; expiry tests use an injected clock/scheduler with no sleeps.
+
+### RED/GREEN and verification
+
+RED exposed four event-immutability assertions that were checking schema-parser copies rather than the emitted frozen values, and cancellation tests established the desired accepted-cancel resolution. Assertions were corrected to inspect the actual emitted object; production cancellation was corrected to resolve the cancel caller while retaining stable terminal errors for the interrupted operation.
+
+```text
+$ npm test -- src/main/capabilities/capability-distribution-service.test.ts src/main/capabilities/consent-lease-registry.test.ts
+2 files passed; 52 tests passed.
+
+$ npm test -- src/main/capabilities/capability-package-installer.test.ts src/main/capabilities/installed-catalog.test.ts src/main/capabilities/capability-distribution-service.test.ts src/main/capabilities/consent-lease-registry.test.ts src/main/packages/package-lock.test.ts src/main/capabilities/capability-repository.test.ts src/main/packages/package-repository.test.ts
+7 files passed; 138 tests passed.
+
+$ npm run typecheck
+Blocked only by the known unrelated renderer diagnostic at CodingAgentSession.tsx:387: skillInvocations is not a Props member.
+
+$ git diff --check
+passed.
+
+$ npx prettier --check <four changed TypeScript files>
+passed.
+```

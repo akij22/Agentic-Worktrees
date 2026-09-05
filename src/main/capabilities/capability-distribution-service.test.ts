@@ -80,9 +80,23 @@ class Lock {
 }
 function setup(
   overrides: {
-    acquire?: () => Promise<typeof staged>;
+    acquire?: (signal: AbortSignal) => Promise<typeof staged>;
     inspect?: (...args: unknown[]) => Promise<typeof inspected>;
+    verify?: (
+      value: typeof inspected,
+      signal: AbortSignal,
+    ) => Promise<{
+      capabilityId: string;
+      version: string;
+      contentDigest: string;
+      toolNames: string[];
+    }>;
     official?: unknown;
+    clock?: () => number;
+    scheduler?: {
+      setTimeout(callback: () => void, delayMs: number): unknown;
+      clearTimeout(handle: unknown): void;
+    };
     commit?: (
       repo: ManagedPackageRepository,
       capabilities: CapabilityRepository,
@@ -114,15 +128,18 @@ function setup(
         }),
     );
   const verifier = {
-    verify: vi.fn(async () => {
-      order.push("verify");
-      return {
-        capabilityId: "example.search",
-        version: "1.2.3",
-        contentDigest: "digest-safe",
-        toolNames: ["search"],
-      };
-    }),
+    verify: vi.fn(
+      overrides.verify ??
+        (async () => {
+          order.push("verify");
+          return {
+            capabilityId: "example.search",
+            version: "1.2.3",
+            contentDigest: "digest-safe",
+            toolNames: ["search"],
+          };
+        }),
+    ),
   };
   const installer = {
     commitFresh: vi.fn(async () => {
@@ -158,9 +175,13 @@ function setup(
     capabilityRepository: capabilities,
     packageLock: lock as never,
     acquirer: {
-      acquire: async (operationId: string) => {
+      acquire: async (
+        operationId: string,
+        _sourceSpec: string,
+        signal: AbortSignal,
+      ) => {
         lastId = operationId;
-        return acquire();
+        return acquire(signal);
       },
       discard,
     } as never,
@@ -170,6 +191,8 @@ function setup(
     officialCatalog: {
       findCapability: vi.fn(async () => overrides.official),
     } as never,
+    clock: overrides.clock,
+    scheduler: overrides.scheduler,
   });
   return {
     db,
@@ -358,7 +381,11 @@ describe("CapabilityDistributionService direct consent integration", () => {
     expect(f.discard).toHaveBeenCalledOnce();
     expect(f.lock.held).toBe(false);
   });
-  it("installs in verify-then-commit order, completes, cleans, releases, and creates no session", async () => {
+  it("installs in verify-then-commit order without creating or activating a session", async () => {
+    const activationBoundary = {
+      prepareSession: vi.fn(),
+      setActiveCapabilities: vi.fn(),
+    };
     const f = setup();
     const events: unknown[] = [];
     f.service.subscribe((e) => events.push(e));
@@ -388,6 +415,8 @@ describe("CapabilityDistributionService direct consent integration", () => {
     expect(
       f.db.prepare("SELECT COUNT(*) count FROM session_capabilities").get(),
     ).toEqual({ count: 0 });
+    expect(activationBoundary.prepareSession).not.toHaveBeenCalled();
+    expect(activationBoundary.setActiveCapabilities).not.toHaveBeenCalled();
     await expect(f.service.install(consent(inspection))).rejects.toThrow(
       "package_busy",
     );
@@ -468,4 +497,317 @@ describe("CapabilityDistributionService direct consent integration", () => {
     expect(f.acquire).toHaveBeenCalledTimes(2);
     await f.service.cancel(secondInspection.inspectionId);
   });
+
+  it("rejects an unknown inspection without touching package work", async () => {
+    const f = setup();
+    await expect(
+      f.service.install({
+        inspectionId: crypto.randomUUID(),
+        acceptedPackageName: staged.packageName,
+        acceptedVersion: staged.resolvedVersion,
+        acceptedIntegrity: staged.integrity,
+        acceptedPermissionDigest: "perm-safe",
+      }),
+    ).rejects.toThrow("package_busy");
+    expect(f.acquire).not.toHaveBeenCalled();
+    expect(f.verifier).not.toHaveBeenCalled();
+    expect(f.installer).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid install request before selecting a pending lease", async () => {
+    const f = setup();
+    const inspection = await f.service.inspect({
+      sourceSpec: staged.requestedSpec,
+    });
+    await expect(
+      f.service.install({ ...consent(inspection), acceptedIntegrity: "" }),
+    ).rejects.toThrow();
+    expect(f.verifier).not.toHaveBeenCalled();
+    expect(f.installer).not.toHaveBeenCalled();
+    await f.service.cancel(inspection.inspectionId);
+  });
+
+  it.each([
+    ["package name", { acceptedPackageName: "@other/package" }],
+    ["version", { acceptedVersion: "9.9.9" }],
+    ["integrity", { acceptedIntegrity: "sha512-other" }],
+    ["permission digest", { acceptedPermissionDigest: "perm-other" }],
+  ])(
+    "consumes a consent with mismatched %s without verification",
+    async (_label, change) => {
+      const f = setup();
+      const events: unknown[] = [];
+      f.service.subscribe((event) => events.push(event));
+      const inspection = await f.service.inspect({
+        sourceSpec: staged.requestedSpec,
+      });
+      const error = await failure(
+        f.service.install({ ...consent(inspection), ...change }),
+      );
+      expect(error.message).toBe("package_permission_denied");
+      expect(f.verifier).not.toHaveBeenCalled();
+      expect(f.installer).not.toHaveBeenCalled();
+      expect(f.discard).toHaveBeenCalledOnce();
+      expect(f.lock).toMatchObject({ held: false, releases: 1 });
+      expect(
+        f.repository.snapshotOperation(inspection.inspectionId),
+      ).toMatchObject({
+        status: "failed",
+        errorCode: "package_permission_denied",
+      });
+      const rawTerminal = events.at(-1);
+      const terminal = capabilityDistributionProgressSchema.parse(rawTerminal);
+      expect(terminal).toMatchObject({
+        status: "failed",
+        errorCode: "package_permission_denied",
+      });
+      expect(Object.isFrozen(rawTerminal)).toBe(true);
+      expect(JSON.stringify([error, terminal])).not.toContain("/private");
+    },
+  );
+
+  it.each([
+    ["Capability ID", { capabilityId: "other.id" }],
+    ["version", { version: "9.9.9" }],
+    ["content digest", { contentDigest: "digest-other" }],
+    ["missing tool", { toolNames: [] }],
+    ["changed tool", { toolNames: ["other"] }],
+  ])(
+    "rejects verifier %s mismatch before installer commit",
+    async (_label, change) => {
+      const f = setup({
+        verify: async () => ({
+          capabilityId: "example.search",
+          version: "1.2.3",
+          contentDigest: "digest-safe",
+          toolNames: ["search"],
+          ...change,
+        }),
+      });
+      const inspection = await f.service.inspect({
+        sourceSpec: staged.requestedSpec,
+      });
+      await expect(f.service.install(consent(inspection))).rejects.toThrow(
+        "package_verification_failed",
+      );
+      expect(f.installer).not.toHaveBeenCalled();
+      expect(f.discard).toHaveBeenCalledOnce();
+      expect(f.lock.held).toBe(false);
+      expect(
+        f.repository.snapshotOperation(inspection.inspectionId),
+      ).toMatchObject({
+        status: "failed",
+        errorCode: "package_verification_failed",
+      });
+    },
+  );
+
+  it("detects staged content mutation at the verifier boundary", async () => {
+    const f = setup({
+      verify: async (value) => {
+        value.staged.contentDigest = "digest-tampered";
+        return {
+          capabilityId: "example.search",
+          version: "1.2.3",
+          contentDigest: "digest-safe",
+          toolNames: ["search"],
+        };
+      },
+    });
+    const inspection = await f.service.inspect({
+      sourceSpec: staged.requestedSpec,
+    });
+    await expect(f.service.install(consent(inspection))).rejects.toThrow(
+      "package_verification_failed",
+    );
+    expect(f.installer).not.toHaveBeenCalled();
+    staged.contentDigest = "digest-safe";
+  });
+
+  it("expires at exactly fifteen minutes and cannot be revived", async () => {
+    const scheduler = new Scheduler();
+    const f = setup({ clock: () => scheduler.now, scheduler });
+    const inspection = await f.service.inspect({
+      sourceSpec: staged.requestedSpec,
+    });
+    scheduler.advance(900_000);
+    await expect(f.service.install(consent(inspection))).rejects.toThrow(
+      "package_busy",
+    );
+    expect(
+      f.repository.snapshotOperation(inspection.inspectionId),
+    ).toMatchObject({
+      status: "failed",
+      errorCode: "package_permission_denied",
+    });
+    expect(f.discard).toHaveBeenCalledOnce();
+    expect(f.lock.held).toBe(false);
+  });
+
+  it("accepts one millisecond before the fifteen-minute deadline", async () => {
+    const scheduler = new Scheduler();
+    const f = setup({ clock: () => scheduler.now, scheduler });
+    const inspection = await f.service.inspect({
+      sourceSpec: staged.requestedSpec,
+    });
+    scheduler.advance(899_999);
+    await expect(f.service.install(consent(inspection))).resolves.toMatchObject(
+      {
+        state: "needs_setup",
+      },
+    );
+    expect(f.installer).toHaveBeenCalledOnce();
+  });
+
+  it("cancels an in-flight acquisition through its real AbortSignal", async () => {
+    let observedSignal: AbortSignal | undefined;
+    const f = setup({
+      acquire: (signal) => {
+        observedSignal = signal;
+        return new Promise((_, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          }),
+        );
+      },
+    });
+    const pending = f.service.inspect({ sourceSpec: staged.requestedSpec });
+    await Promise.resolve();
+    const operationId = f.operationId();
+    const cancellation = f.service.cancel(operationId);
+    await expect(pending).rejects.toThrow("package_permission_denied");
+    await expect(cancellation).resolves.toBeUndefined();
+    expect(observedSignal?.aborted).toBe(true);
+    expect(f.repository.snapshotOperation(operationId)?.status).toBe(
+      "cancelled",
+    );
+    expect(f.discard).toHaveBeenCalledOnce();
+    expect(f.lock.held).toBe(false);
+  });
+
+  it("cancels an in-flight verifier, skips commit, and records cancellation", async () => {
+    let observedSignal: AbortSignal | undefined;
+    const f = setup({
+      verify: (_value, signal) => {
+        observedSignal = signal;
+        return new Promise((_, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          }),
+        );
+      },
+    });
+    const inspection = await f.service.inspect({
+      sourceSpec: staged.requestedSpec,
+    });
+    const installing = f.service.install(consent(inspection));
+    await Promise.resolve();
+    const cancellation = f.service.cancel(inspection.inspectionId);
+    await expect(installing).rejects.toThrow("package_permission_denied");
+    await expect(cancellation).resolves.toBeUndefined();
+    expect(observedSignal?.aborted).toBe(true);
+    expect(f.installer).not.toHaveBeenCalled();
+    expect(
+      f.repository.snapshotOperation(inspection.inspectionId)?.status,
+    ).toBe("cancelled");
+    expect(f.discard).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["required secret", "apiKey", { type: "secret", required: true }],
+    ["required non-secret", "endpoint", { type: "string", required: true }],
+  ] as const)(
+    "projects needs_setup for a %s while retaining reviewed settings",
+    async (_label, key, setting) => {
+      const customized = {
+        ...inspected,
+        descriptor: {
+          ...descriptor,
+          manifest: {
+            ...descriptor.manifest,
+            settings: { [key]: setting },
+          },
+        },
+      };
+      const f = setup({ inspect: async () => customized });
+      const inspection = await f.service.inspect({
+        sourceSpec: staged.requestedSpec,
+      });
+      expect(inspection.capability.settings).toEqual([{ key, ...setting }]);
+      const accepted = consent(inspection);
+      const result = await f.service.install(accepted);
+      expect(result.state).toBe("needs_setup");
+      expect(result.settings).toEqual([{ key, ...setting }]);
+      expect(accepted.acceptedPermissionDigest).toBe("perm-safe");
+      expect(Object.isFrozen(result)).toBe(true);
+      expect(Object.isFrozen(result.settings)).toBe(true);
+    },
+  );
+
+  it("rejects cancellation after atomic commit begins", async () => {
+    let finish!: () => void;
+    const committing = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const f = setup({
+      commit: async (repo, capabilities) => {
+        await committing;
+        capabilities.upsertInstallation({
+          capabilityId: "example.search",
+          version: "1.2.3",
+          permissionDigest: "perm-safe",
+          configured: false,
+        });
+        repo.commitInstallation(f.operationId(), {
+          packageName: staged.packageName,
+          itemKind: "capability",
+          itemId: "example.search",
+          requestedSpec: staged.requestedSpec,
+          activeVersion: staged.resolvedVersion,
+          activeIntegrity: staged.integrity,
+          activeContentDigest: staged.contentDigest,
+          trust: "community",
+          reviewStatus: "unreviewed",
+          permissionDigest: "perm-safe",
+          state: "installed",
+        });
+        return { state: "installed" };
+      },
+    });
+    const inspection = await f.service.inspect({
+      sourceSpec: staged.requestedSpec,
+    });
+    const installing = f.service.install(consent(inspection));
+    await Promise.resolve();
+    await Promise.resolve();
+    await expect(f.service.cancel(inspection.inspectionId)).rejects.toThrow(
+      "package_busy",
+    );
+    finish();
+    await expect(installing).resolves.toBeDefined();
+    expect(f.installer).toHaveBeenCalledOnce();
+  });
 });
+
+class Scheduler {
+  now = 10_000;
+  private next = 1;
+  private readonly timers = new Map<number, { at: number; run: () => void }>();
+  setTimeout(run: () => void, delayMs: number) {
+    const id = this.next++;
+    this.timers.set(id, { at: this.now + delayMs, run });
+    return id;
+  }
+  clearTimeout(id: unknown) {
+    this.timers.delete(id as number);
+  }
+  advance(ms: number) {
+    this.now += ms;
+    for (const [id, timer] of [...this.timers]) {
+      if (timer.at <= this.now) {
+        this.timers.delete(id);
+        timer.run();
+      }
+    }
+  }
+}

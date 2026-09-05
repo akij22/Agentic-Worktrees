@@ -152,15 +152,14 @@ export class ConsentLeaseRegistry {
           } catch (error) {
             throw safeError(safeCode(error, "package_download_failed"));
           }
+          if (cancelRequested) throw safeError("package_permission_denied");
           try {
-            ready.resolve(
-              freeze(
-                await options.inspect(
-                  acquired,
-                  freeze({ expiresAt: this.options.clock() + this.timeoutMs }),
-                ),
-              ),
+            const inspection = await options.inspect(
+              acquired,
+              freeze({ expiresAt: this.options.clock() + this.timeoutMs }),
             );
+            if (cancelRequested) throw safeError("package_permission_denied");
+            ready.resolve(freeze(inspection));
           } catch (error) {
             throw safeError(safeCode(error, "package_manifest_invalid"));
           }
@@ -272,7 +271,8 @@ export class ConsentLeaseRegistry {
       (error) => {
         this.workflows.delete(options.operationId);
         rejectAccept?.(error);
-        rejectCancel?.(error);
+        if (cancelRequested) resolveCancel?.();
+        else rejectCancel?.(error);
       },
     );
     void ownerTask.catch(() => undefined);

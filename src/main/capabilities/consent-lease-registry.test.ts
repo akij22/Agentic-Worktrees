@@ -375,4 +375,132 @@ describe("ConsentLeaseRegistry", () => {
     expect(secondAcquire).toHaveBeenCalledOnce();
     await second.cancel();
   });
+
+  it("cancels during acquisition without publishing readiness", async () => {
+    let release!: () => void;
+    const acquired = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const scheduler = new Scheduler();
+    const terminal = vi.fn();
+    const registry = new ConsentLeaseRegistry({
+      lock: new FakeLock(),
+      scheduler,
+      clock: () => scheduler.now,
+    });
+    const lease = registry.start({
+      operationId: "acquiring",
+      acquire: async () => {
+        await acquired;
+        return { value: true };
+      },
+      inspect: vi.fn((value) => value),
+      accept: async () => "done",
+      terminal,
+      cleanup: async () => undefined,
+    });
+    const cancellation = lease.cancel();
+    release();
+    await expect(cancellation).resolves.toBeUndefined();
+    await expect(lease.ready).rejects.toThrow("package_permission_denied");
+    expect(terminal).toHaveBeenCalledWith({
+      reason: "cancelled",
+      code: "package_permission_denied",
+    });
+  });
+
+  it("cancels after acquisition while static inspection is pending", async () => {
+    let release!: () => void;
+    const inspected = new Promise<{ value: true }>((resolve) => {
+      release = () => resolve({ value: true });
+    });
+    const scheduler = new Scheduler();
+    const registry = new ConsentLeaseRegistry({
+      lock: new FakeLock(),
+      scheduler,
+      clock: () => scheduler.now,
+    });
+    const lease = registry.start({
+      operationId: "inspecting",
+      acquire: async () => ({ value: true }),
+      inspect: async () => inspected,
+      accept: async () => "done",
+      cleanup: async () => undefined,
+    });
+    await flush();
+    const cancellation = lease.cancel();
+    release();
+    await expect(cancellation).resolves.toBeUndefined();
+    await expect(lease.ready).rejects.toThrow("package_permission_denied");
+  });
+
+  it("accepts cancellation during verification and resolves the cancel caller", async () => {
+    let rejectVerification!: (error: Error) => void;
+    const scheduler = new Scheduler();
+    const onCancel = vi.fn(() =>
+      rejectVerification(new Error("private verifier path")),
+    );
+    const registry = new ConsentLeaseRegistry({
+      lock: new FakeLock(),
+      scheduler,
+      clock: () => scheduler.now,
+    });
+    const lease = registry.start({
+      operationId: "verifying",
+      acquire: async () => ({}),
+      inspect: () => ({}),
+      accept: async (_payload: string, _acquired, owner) => {
+        owner.setPhase?.("verifying");
+        return new Promise<string>((_resolve, reject) => {
+          rejectVerification = reject;
+        });
+      },
+      onCancel,
+      cleanup: async () => undefined,
+    });
+    await lease.ready;
+    const acceptance = lease.accept("yes");
+    await flush();
+    await expect(lease.cancel()).resolves.toBeUndefined();
+    await expect(acceptance).rejects.toThrow("package_permission_denied");
+    expect(onCancel).toHaveBeenCalledOnce();
+  });
+
+  it("rejects cancellation after commit phase begins and completes once", async () => {
+    let finish!: () => void;
+    const committing = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const scheduler = new Scheduler();
+    const commit = vi.fn(
+      async (
+        _payload: string,
+        _acquired: object,
+        owner: { setPhase?(phase: "committing"): void },
+      ) => {
+        owner.setPhase?.("committing");
+        await committing;
+        return "done";
+      },
+    );
+    const registry = new ConsentLeaseRegistry({
+      lock: new FakeLock(),
+      scheduler,
+      clock: () => scheduler.now,
+    });
+    const lease = registry.start({
+      operationId: "committing",
+      acquire: async () => ({}),
+      inspect: () => ({}),
+      accept: commit,
+      cleanup: async () => undefined,
+    });
+    await lease.ready;
+    const acceptance = lease.accept("yes");
+    await flush();
+    await expect(lease.cancel()).rejects.toThrow("package_busy");
+    finish();
+    await expect(acceptance).resolves.toBe("done");
+    expect(commit).toHaveBeenCalledOnce();
+  });
 });

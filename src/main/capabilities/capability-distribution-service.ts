@@ -37,28 +37,39 @@ import {
 } from "./consent-lease-registry";
 import { getSqlite } from "../database/client";
 
+const freeze = <T>(value: T): Readonly<T> => {
+  if (value !== null && typeof value === "object") {
+    for (const child of Object.values(value as Record<string, unknown>))
+      freeze(child);
+    Object.freeze(value);
+  }
+  return value;
+};
+
 const detail = (
   inspected: InspectedCapabilityPackage,
   configured: boolean,
 ): CapabilityDetailDto => {
   const m = inspected.descriptor.manifest;
-  return capabilityDetailSchema.parse({
-    ...m,
-    settings: Object.entries(m.settings ?? {}).map(([key, setting]) => ({
-      key,
-      ...setting,
-    })),
-    state: configured ? "ready" : "needs_setup",
-    secretConfigured: configured,
-    installationState: "installed",
-    source: "npm",
-    packageName: inspected.staged.packageName,
-    trust: inspected.trust,
-    reviewStatus: inspected.reviewStatus,
-    activeRunCount: 0,
-    providedTools: inspected.descriptor.tools.map((t) => t.name),
-    permissionDigest: inspected.permissionDigest,
-  });
+  return freeze(
+    capabilityDetailSchema.parse({
+      ...m,
+      settings: Object.entries(m.settings ?? {}).map(([key, setting]) => ({
+        key,
+        ...setting,
+      })),
+      state: configured ? "ready" : "needs_setup",
+      secretConfigured: configured,
+      installationState: "installed",
+      source: "npm",
+      packageName: inspected.staged.packageName,
+      trust: inspected.trust,
+      reviewStatus: inspected.reviewStatus,
+      activeRunCount: 0,
+      providedTools: inspected.descriptor.tools.map((t) => t.name),
+      permissionDigest: inspected.permissionDigest,
+    }),
+  );
 };
 
 export class CapabilityDistributionService {
@@ -334,10 +345,8 @@ export class CapabilityDistributionService {
     return lease.ready;
   }
   async install(input: PackageInstallRequest): Promise<CapabilityDetailDto> {
-    return this.registry.accept(
-      input.inspectionId,
-      packageInstallRequestSchema.parse(input),
-    );
+    const request = packageInstallRequestSchema.parse(input);
+    return this.registry.accept(request.inspectionId, request);
   }
   async cancel(operationId: string) {
     return this.registry.cancel(operationId);
