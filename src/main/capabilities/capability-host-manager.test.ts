@@ -243,6 +243,7 @@ describe("CapabilityHostManager", () => {
     expect(logError).toHaveBeenCalledWith(
       "capability_host_listener_cleanup_failed",
     );
+    expect(child.listenerCount("message")).toBe(0);
     expect(child.listenerCount("exit")).toBe(0);
     expect(child.killCalls).toBe(1);
     manager.stopHost("dispose");
@@ -266,9 +267,36 @@ describe("CapabilityHostManager", () => {
     });
     expect(child.listenerCount("message")).toBe(0);
     expect(child.listenerCount("exit")).toBe(0);
-    expect(child.killCalls).toBe(1);
+    expect(child.killCalls).toBe(0);
     manager.stopHost("exit-race");
-    expect(child.killCalls).toBe(1);
+    expect(child.killCalls).toBe(0);
+  });
+
+  it("fully releases ownership when a running child exits unexpectedly", async () => {
+    const child = new FakeChild();
+    const manager = new CapabilityHostManager({
+      catalog: testCatalog,
+      launch: () => child,
+      resolveSecret: async () => undefined,
+    });
+    const ready = manager.ensureHost("unexpected-exit");
+    child.emit("message", {
+      type: "host.ready",
+      runId: "unexpected-exit",
+      port: 43123,
+    });
+    await ready;
+    const pending = manager.setActiveCapabilities("unexpected-exit", [
+      "agentic-worktrees.web-search",
+    ]);
+    await Promise.resolve();
+    child.emit("exit", 1);
+    await expect(pending).rejects.toMatchObject({ code: "internal_error" });
+    expect(child.listenerCount("message")).toBe(0);
+    expect(child.listenerCount("exit")).toBe(0);
+    expect(child.killCalls).toBe(0);
+    manager.stopHost("unexpected-exit");
+    expect(child.killCalls).toBe(0);
   });
 
   it("resolves descriptors before launch and kills an existing host on lookup failure", async () => {

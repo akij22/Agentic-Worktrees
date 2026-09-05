@@ -108,3 +108,4 @@
 - Task 8 fix round 1: startup catalog readiness gate and stable failure state, pre-launch descriptor resolution/owned-host cleanup, and bounded JSON settings protocol. 72 Task 8 / 139 Task 7 tests and host build pass; known renderer typecheck blocker remains.
 - Task 8 fix round 2: total post-launch HostManager startup boundary with exact-once child kill and listener/record cleanup; direct token/listener/postMessage failure coverage. 75 Task 8 / 139 Task 7 tests and host build pass.
 - Task 8 fix round 3: locally owned listener/child cleanup survives disposer failures, attach-then-throw registration, and startup exit/map-removal races; pending requests clear and child kill remains exact-once. 77 Task 8 / 139 Task 7 tests and host build pass.
+- Task 8 fix round 4: disposer fallback removal and full unexpected-exit local finalization; pending/listener/map ownership is released without redundant child kill. 78 Task 8 / 139 Task 7 tests and host build pass.

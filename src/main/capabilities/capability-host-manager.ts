@@ -130,7 +130,7 @@ export class CapabilityHostManager {
         }
       }
     };
-    const cleanupOwnedChild = () => {
+    const cleanupOwnedChild = (childAlreadyExited = false) => {
       if (cleaned) return;
       cleaned = true;
       if (this.hosts.get(runId)?.child === child) this.hosts.delete(runId);
@@ -147,10 +147,12 @@ export class CapabilityHostManager {
         }
         ownedRecord.pending.clear();
       }
-      try {
-        child.kill();
-      } catch {
-        // The stable startup error remains the only public failure.
+      if (!childAlreadyExited) {
+        try {
+          child.kill();
+        } catch {
+          // The stable startup error remains the only public failure.
+        }
       }
     };
     try {
@@ -197,16 +199,15 @@ export class CapabilityHostManager {
         this.handleMessage(runId, record, value);
       };
       let returnedMessageDisposer: (() => void) | void;
-      ownedDisposers.push(() =>
-        returnedMessageDisposer
-          ? returnedMessageDisposer()
-          : child.removeMessageListener?.(messageListener),
-      );
+      ownedDisposers.push(() => {
+        try {
+          returnedMessageDisposer?.();
+        } finally {
+          child.removeMessageListener?.(messageListener);
+        }
+      });
       returnedMessageDisposer = child.onMessage(messageListener);
       const exitListener = (_code: number) => {
-        if (record.startupTimer) clearTimeout(record.startupTimer);
-        if (this.hosts.get(runId) !== record) return;
-        this.hosts.delete(runId);
         const error = new CapabilityError(
           "internal_error",
           "Capability host stopped unexpectedly.",
@@ -217,13 +218,16 @@ export class CapabilityHostManager {
           request.reject(error);
         }
         record.pending.clear();
+        cleanupOwnedChild(true);
       };
       let returnedExitDisposer: (() => void) | void;
-      ownedDisposers.push(() =>
-        returnedExitDisposer
-          ? returnedExitDisposer()
-          : child.removeExitListener?.(exitListener),
-      );
+      ownedDisposers.push(() => {
+        try {
+          returnedExitDisposer?.();
+        } finally {
+          child.removeExitListener?.(exitListener);
+        }
+      });
       returnedExitDisposer = child.onExit(exitListener);
       child.postMessage({
         type: "host.initialize",

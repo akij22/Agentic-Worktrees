@@ -49,3 +49,13 @@ Host startup now retains child, record, and listener cleanup ownership in local 
 Direct tests cover: disposer throw with pending-request rejection and continued kill/cleanup; `onMessage` attach-then-throw removal; exit removing the record before `postMessage` throws; exact-once kill after later stop; and existing normal startup behavior.
 
 Verification: Task 8 **8 files / 77 tests passed**; Capability Host build passed; Task 7 **7 files / 139 tests passed**; typecheck retains only the known unrelated `CodingAgentSession.tsx:387` blocker.
+
+## Fix round 4 — disposer fallback and unexpected-exit finalization
+
+Each owned listener registration now installs its cleanup wrapper before registration. The wrapper always invokes explicit callback removal in `finally`, including when a returned disposer throws. Every cleanup runs independently and safely logs normalized failures, so one broken disposer cannot skip another listener, pending-request rejection, map cleanup, or process ownership finalization.
+
+Unexpected child exit now invokes the same locally-owned finalizer with an `already exited` mode: listeners/timers/map/pending requests are released, while `kill()` is intentionally skipped to avoid recursion and double termination. Startup catch remains idempotent after an exit removed the map record.
+
+Direct coverage adds disposer-throw fallback detachment and a normal-running unexpected-exit case with pending rejection, zero retained listeners, no later stop effect, and no redundant kill. Existing attach-then-throw and exit-during-startup regressions remain green.
+
+Verification: Task 8 **8 files / 78 tests passed**; Capability Host build passed; Task 7 **7 files / 139 tests passed**; typecheck retains only the known unrelated `CodingAgentSession.tsx:387` blocker.
