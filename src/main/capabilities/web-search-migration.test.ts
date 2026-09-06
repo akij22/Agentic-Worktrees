@@ -61,7 +61,12 @@ describe("WebSearchMigration", () => {
     });
   };
   const fixture = (
-    options: { acquireFails?: boolean; descriptor?: unknown } = {},
+    options: {
+      acquireFails?: boolean;
+      descriptor?: typeof WEB_SEARCH_MIGRATION.descriptor;
+      officialDescriptor?: typeof WEB_SEARCH_MIGRATION.descriptor;
+      inspectedPermissionDigest?: string;
+    } = {},
   ) => {
     const staged = {
       operationId: "replaced",
@@ -85,7 +90,9 @@ describe("WebSearchMigration", () => {
         entry: "./dist/index.js",
       },
       descriptor: options.descriptor ?? WEB_SEARCH_MIGRATION.descriptor,
-      permissionDigest: WEB_SEARCH_MIGRATION.permissionDigest,
+      permissionDigest:
+        options.inspectedPermissionDigest ??
+        WEB_SEARCH_MIGRATION.permissionDigest,
       trust: "official" as const,
       reviewStatus: "official-reviewed" as const,
     }));
@@ -113,35 +120,37 @@ describe("WebSearchMigration", () => {
         });
       },
     );
+    const findCapability = vi.fn(async () => ({
+      capabilityId: id,
+      packageName: WEB_SEARCH_MIGRATION.packageName,
+      releaseSpec: "0.1.0",
+      descriptor: options.officialDescriptor ?? WEB_SEARCH_MIGRATION.descriptor,
+      publisher: "Agentic Worktrees",
+      minimumAppVersion: "1.0.0",
+      blockedVersions: [],
+      releaseNotes: "",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    }));
+    const verifier = vi.fn(
+      async (value: Awaited<ReturnType<typeof inspected>>) => ({
+        capabilityId: id,
+        version: "0.1.0",
+        contentDigest: value.staged.contentDigest,
+        toolNames: value.descriptor.tools.map(
+          (tool: { name: string }) => tool.name,
+        ),
+      }),
+    );
     const migration = new WebSearchMigration({
       capabilities,
       packages,
-      officialCatalog: {
-        findCapability: vi.fn(async () => ({
-          capabilityId: id,
-          packageName: WEB_SEARCH_MIGRATION.packageName,
-          releaseSpec: "0.1.0",
-          descriptor: WEB_SEARCH_MIGRATION.descriptor,
-          publisher: "Agentic Worktrees",
-          minimumAppVersion: "1.0.0",
-          blockedVersions: [],
-          releaseNotes: "",
-          updatedAt: "2026-01-01T00:00:00.000Z",
-        })),
-      },
+      officialCatalog: { findCapability: findCapability as never },
       acquirer: {
         acquire: acquired as never,
         discard: vi.fn(async () => undefined),
       },
       inspector: { inspect: inspected as never },
-      verifier: {
-        verify: vi.fn(async (value) => ({
-          capabilityId: id,
-          version: "0.1.0",
-          contentDigest: value.staged.contentDigest,
-          toolNames: value.descriptor.tools.map((tool: { name: string }) => tool.name),
-        })),
-      },
+      verifier: { verify: verifier as never },
       installer: { commitFresh: installer as never },
       lock: {
         runExclusive: async (
@@ -149,7 +158,14 @@ describe("WebSearchMigration", () => {
         ) => work({ assertHealthy() {} }),
       } as never,
     });
-    return { migration, acquired, inspected, installer };
+    return {
+      migration,
+      findCapability,
+      acquired,
+      inspected,
+      verifier,
+      installer,
+    };
   };
 
   it("migrates the exact reviewed installation without duplicate consent and preserves data and sessions byte-for-byte", async () => {
@@ -204,17 +220,81 @@ describe("WebSearchMigration", () => {
     expect(packages.list()).toEqual([]);
   });
 
-  it("rejects a static descriptor mismatch as pending before executable verification", async () => {
+  it("rejects a mutated Official descriptor before package work and preserves every legacy row", async () => {
     seed();
+    const configuration = capabilities.snapshotInstalledConfiguration(id);
+    const sessions = capabilities.snapshotSessionCapabilities(id);
     const changed = { ...WEB_SEARCH_MIGRATION.descriptor, tools: [] };
-    const f = fixture({ descriptor: changed });
+    const f = fixture({ officialDescriptor: changed });
     await expect(
       f.migration.reconcile(new AbortController().signal),
     ).resolves.toBe("migration_pending");
+    expect(f.findCapability).toHaveBeenCalledOnce();
+    expect(f.acquired).not.toHaveBeenCalled();
+    expect(f.inspected).not.toHaveBeenCalled();
+    expect(f.verifier).not.toHaveBeenCalled();
+    expect(f.installer).not.toHaveBeenCalled();
+    expect(capabilities.snapshotInstalledConfiguration(id)).toEqual(
+      configuration,
+    );
+    expect(capabilities.snapshotSessionCapabilities(id)).toEqual(sessions);
+  });
+
+  it("persists an inspector permission mismatch as pending without changing legacy data", async () => {
+    seed();
+    const configuration = capabilities.snapshotInstalledConfiguration(id);
+    const sessions = capabilities.snapshotSessionCapabilities(id);
+    const f = fixture({
+      inspectedPermissionDigest: "inspector-changed-digest",
+    });
+    await expect(
+      f.migration.reconcile(new AbortController().signal),
+    ).resolves.toBe("migration_pending");
+    expect(f.inspected).toHaveBeenCalledOnce();
+    expect(f.verifier).not.toHaveBeenCalled();
     expect(f.installer).not.toHaveBeenCalled();
     expect(
-      packages.getByPackageName(WEB_SEARCH_MIGRATION.packageName)?.state,
-    ).toBe("migration_pending");
+      packages.getByPackageName(WEB_SEARCH_MIGRATION.packageName),
+    ).toMatchObject({
+      state: "migration_pending",
+      activeVersion: undefined,
+      acceptedPermissionDigest: WEB_SEARCH_MIGRATION.permissionDigest,
+    });
+    expect(capabilities.snapshotInstalledConfiguration(id)).toEqual(
+      configuration,
+    );
+    expect(capabilities.snapshotSessionCapabilities(id)).toEqual(sessions);
+  });
+
+  it("normalizes a non-installed managed record to durable migration pending", async () => {
+    seed();
+    packages.saveMigrationPending({
+      packageName: WEB_SEARCH_MIGRATION.packageName,
+      itemKind: "capability",
+      itemId: id,
+      requestedSpec: WEB_SEARCH_MIGRATION.requestedSpec,
+      trust: "official",
+      reviewStatus: "official-reviewed",
+      permissionDigest: WEB_SEARCH_MIGRATION.permissionDigest,
+    });
+    db.prepare(
+      "UPDATE managed_package_installations SET state='invalid', active_version='0.1.0', active_integrity='old-integrity', active_content_digest=?, error_code='package_install_failed' WHERE package_name=?",
+    ).run("b".repeat(64), WEB_SEARCH_MIGRATION.packageName);
+    const before = capabilities.snapshotInstalledConfiguration(id);
+    const sessions = capabilities.snapshotSessionCapabilities(id);
+    const f = fixture();
+    await expect(
+      f.migration.reconcile(new AbortController().signal),
+    ).resolves.toBe("migration_pending");
+    const pending = packages.getByPackageName(WEB_SEARCH_MIGRATION.packageName);
+    expect(pending).toMatchObject({
+      state: "migration_pending",
+      activeVersion: undefined,
+    });
+    expect(pending?.errorCode).toBeUndefined();
+    expect(f.findCapability).not.toHaveBeenCalled();
+    expect(capabilities.snapshotInstalledConfiguration(id)).toEqual(before);
+    expect(capabilities.snapshotSessionCapabilities(id)).toEqual(sessions);
   });
 
   it("retries a pending migration and is idempotent after success", async () => {

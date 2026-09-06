@@ -28,5 +28,12 @@
 
 - Direct migration/installer/startup: **3 files / 44 tests passed**.
 - Focused migration/installer/startup/service/repositories: **7 files / 111 tests passed**.
-- Capability/package Task 7–9 regression selection: **32 files / 390 tests passed**.
+- Capability/package Task 7–9 regression selection: **32 files / 392 tests passed**.
 - `npm run typecheck`: changed Task 10 files typecheck; command remains blocked only by the known unrelated renderer diagnostic at `CodingAgentSession.tsx:387` (`skillInvocations` missing from `Props`).
+
+## Fix round 1
+
+- Official catalog descriptor drift is now directly rejected before acquisition, static inspection, executable verification, or installation; exact legacy configuration/digest/session snapshots remain unchanged.
+- Inspector permission-digest drift now has direct durable-pending coverage with no verification/installation and exact legacy preservation.
+- Existing managed records in non-installed/non-pending states are normalized through `saveMigrationPending()`, clearing active metadata and unsafe prior errors while preserving all legacy rows.
+- Focused migration suite: **1 file / 8 tests passed**. Capability/package regressions: **32 files / 392 tests passed**. Typecheck retains only the known unrelated renderer blocker.

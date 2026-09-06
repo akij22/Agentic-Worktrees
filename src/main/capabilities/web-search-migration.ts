@@ -67,7 +67,7 @@ export class WebSearchMigration {
     if (!legacy) return "not_needed";
     if (managed?.state === "installed") return "migrated";
     if (managed && managed.state !== "migration_pending")
-      return "migration_pending";
+      return this.pending(legacy.permissionDigest);
     return this.run(legacy.version, legacy.permissionDigest, signal);
   }
 
