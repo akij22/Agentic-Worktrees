@@ -45,3 +45,9 @@ RED was witnessed when the Marketplace handler module did not exist. GREEN focus
 - Made both subscription replacement edges exception-safe: throwing unsubscribe functions cannot prevent replacement, throwing subscribe functions leave no stale active service, and retries/replacements remain available. Only stable `marketplace_event_*_failed` codes are reported.
 - Rewrote preload success coverage so all nine invoke operations use concrete valid requests/responses and assert exact channels, payloads, and parsed return values; subscription delivery/unsubscribe and malformed response rejection remain separate.
 - Verification: focused 9 files/84 tests and Task 7–10 regressions 34 files/402 tests pass. Typecheck retains only the known unrelated `CodingAgentSession.tsx:387` Props blocker; `git diff --check` passes.
+
+## Fix round 3
+
+- Added a private exception-safe reporting boundary for subscribe, unsubscribe, and listener callback failures. A throwing observability reporter can no longer interrupt replacement, teardown, or retry ownership transitions.
+- Added direct throwing-reporter tests for unsubscribe replacement/teardown and repeated failed subscribe followed by successful attachment.
+- Verification: focused 9 files/86 tests pass; typecheck retains only the known unrelated `CodingAgentSession.tsx:387` Props blocker; `git diff --check` passes. Task 7–10 regression evidence remains 34 files/402 tests from fix round 2 because this round changes only the isolated subscription owner.

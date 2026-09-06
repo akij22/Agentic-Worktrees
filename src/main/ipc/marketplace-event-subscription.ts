@@ -6,8 +6,16 @@ export class MarketplaceEventSubscription {
   private unsubscribe: (() => void) | null = null;
 
   constructor(
-    private readonly report: (code: "marketplace_event_unsubscribe_failed" | "marketplace_event_subscribe_failed") => void = (code) => console.error(code),
+    private readonly report: (code: "marketplace_event_unsubscribe_failed" | "marketplace_event_subscribe_failed" | "marketplace_event_callback_failed") => void = (code) => console.error(code),
   ) {}
+
+  private safeReport(code: "marketplace_event_unsubscribe_failed" | "marketplace_event_subscribe_failed" | "marketplace_event_callback_failed"): void {
+    try {
+      this.report(code);
+    } catch {
+      // Reporting is observability-only and must not affect listener ownership.
+    }
+  }
 
   configure(
     service: CapabilityDistributionService | null,
@@ -20,7 +28,7 @@ export class MarketplaceEventSubscription {
     try {
       priorUnsubscribe?.();
     } catch {
-      this.report("marketplace_event_unsubscribe_failed");
+      this.safeReport("marketplace_event_unsubscribe_failed");
     }
     if (!service) return;
     try {
@@ -29,7 +37,7 @@ export class MarketplaceEventSubscription {
         try {
           listener(event);
         } catch {
-          // Distribution observers must never destabilize startup or teardown.
+          this.safeReport("marketplace_event_callback_failed");
         }
       });
       this.service = service;
@@ -37,7 +45,7 @@ export class MarketplaceEventSubscription {
     } catch {
       this.service = null;
       this.unsubscribe = null;
-      this.report("marketplace_event_subscribe_failed");
+      this.safeReport("marketplace_event_subscribe_failed");
     }
   }
 }
