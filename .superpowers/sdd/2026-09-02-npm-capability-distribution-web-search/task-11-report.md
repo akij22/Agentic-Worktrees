@@ -31,3 +31,11 @@ RED was witnessed when the Marketplace handler module did not exist. GREEN focus
 - `npm run typecheck`: reaches only the known unrelated baseline blocker at `src/renderer/features/coding-agent/views/CodingAgentSession.tsx:387` (`skillInvocations` missing from `Props`).
 - Scoped ESLint could not start because the inherited worktree and parent installations resolve duplicate `eslint-plugin-import` instances.
 - `git diff --check`: passed.
+
+## Fix round 1
+
+- Moved raw request parsing, service invocation, and outbound DTO parsing for every Marketplace operation behind one stable-error boundary. Skill listing and its DTO parsing are now contained by the same boundary; raw service errors, Zod issues, causes, stacks, and paths do not cross IPC.
+- Captured Marketplace handlers once during registration rather than resolving mutable services per invocation.
+- Removed dynamic Skill-service access from distribution event callbacks, guarded replacement ownership, and isolated malformed/stale callbacks so startup and teardown cannot throw or leak listeners.
+- Strengthened direct tests for stable malformed-input/backend/event errors, throwing Skill catalogs, successful preload response/channel/payload mapping, and stale callback isolation.
+- Verification repeated: focused 9 files/81 tests and Task 7–10 regressions 34 files/402 tests pass. Typecheck retains only the known unrelated renderer Props blocker; `git diff --check` passes.

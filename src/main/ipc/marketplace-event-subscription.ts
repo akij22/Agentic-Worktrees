@@ -13,6 +13,13 @@ export class MarketplaceEventSubscription {
     this.unsubscribe?.();
     this.unsubscribe = null;
     this.service = service;
-    if (service) this.unsubscribe = service.subscribe(listener);
+    if (service) this.unsubscribe = service.subscribe((event) => {
+      if (this.service !== service) return;
+      try {
+        listener(event);
+      } catch {
+        // Distribution observers must never destabilize startup or teardown.
+      }
+    });
   }
 }
