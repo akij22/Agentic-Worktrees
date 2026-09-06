@@ -39,3 +39,9 @@ RED was witnessed when the Marketplace handler module did not exist. GREEN focus
 - Removed dynamic Skill-service access from distribution event callbacks, guarded replacement ownership, and isolated malformed/stale callbacks so startup and teardown cannot throw or leak listeners.
 - Strengthened direct tests for stable malformed-input/backend/event errors, throwing Skill catalogs, successful preload response/channel/payload mapping, and stale callback isolation.
 - Verification repeated: focused 9 files/81 tests and Task 7–10 regressions 34 files/402 tests pass. Typecheck retains only the known unrelated renderer Props blocker; `git diff --check` passes.
+
+## Fix round 2
+
+- Made both subscription replacement edges exception-safe: throwing unsubscribe functions cannot prevent replacement, throwing subscribe functions leave no stale active service, and retries/replacements remain available. Only stable `marketplace_event_*_failed` codes are reported.
+- Rewrote preload success coverage so all nine invoke operations use concrete valid requests/responses and assert exact channels, payloads, and parsed return values; subscription delivery/unsubscribe and malformed response rejection remain separate.
+- Verification: focused 9 files/84 tests and Task 7–10 regressions 34 files/402 tests pass. Typecheck retains only the known unrelated `CodingAgentSession.tsx:387` Props blocker; `git diff --check` passes.
