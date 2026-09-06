@@ -39,11 +39,11 @@ The durable removal-recovery row contains relative/serializable snapshots and GC
 6. Idle-run rejection before persistent mutation.
 7. A recording coordinator proves multi-run deactivation receives only both exact reviewed run IDs, persists both as inactive, and never auto-reactivates.
 8. Pointer-detach failure exact restoration.
-9. Catalog-publication failure restores pointer/DB/catalog and the recording coordinator reactivates exactly the same reviewed run-ID set.
+9. Catalog-publication failure restores pointer/DB/catalog; the service supplies the reviewed run IDs to reactivation and the recording coordinator proves that actual argument exactly equals the earlier deactivated set.
 10. Later GC failure restores already staged version directories.
 11. Reactivation failure retains conflict recovery and blocks installation.
 12. A distinct old version referenced by a real inactive session association survives GC recursively (including its executable sentinel), with the exact association unchanged.
-13. Distinct previous/candidate versions referenced by a durable update recovery journal both survive GC recursively, with exact journal version fields unchanged.
+13. Distinct previous/candidate versions referenced by a durable update recovery journal both survive GC recursively, with the complete parsed journal (token, stage/error, pointers, integrity/digests, installation, configuration/settings, and sessions) deeply unchanged.
 14. Session/chat associations remain exact through inspection cancellation.
 15. Cleanup failure persists `cleanup_pending` recovery.
 16. Startup reconciliation completes pending cleanup without activation.
@@ -57,4 +57,4 @@ The durable removal-recovery row contains relative/serializable snapshots and GC
 - `npm run db:generate` — 27 tables; **No schema changes, nothing to migrate**, confirming checked-in `0012_big_shooting_star.sql`, `meta/0012_snapshot.json`, and `_journal.json` match the schema.
 - `npm test -- src/main/capabilities/capability-removal.test.ts` — **1 file / 20 tests passed**.
 - Task 9 regression selection (removal, update lifecycle/recovery/configuration/blocking, installer, discovery/metadata) — **7 files / 110 tests passed**.
-- Typecheck was not rerun during finalization: the only source-file scope adjustment was reverting unrelated `SessionMessages.tsx` to HEAD, while the Task 9B2 source had already been typechecked; the documented pre-existing renderer Props blocker therefore remains unchanged.
+- `npm run typecheck` — Task 9B2 source/tests pass type checking; the command remains nonzero only for the documented pre-existing unrelated `CodingAgentSession.tsx:387` missing `skillInvocations` Props diagnostic.

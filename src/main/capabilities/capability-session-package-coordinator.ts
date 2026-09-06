@@ -6,6 +6,6 @@ export interface CapabilitySessionPackageCoordinator {
   restoreRuns(capabilityId: string, version: string): Promise<void>;
   finalizeDeactivation(capabilityId: string): void;
   deactivateRuns(capabilityId: string): Promise<void>;
-  reactivateRuns(capabilityId: string, version: string): Promise<void>;
+  reactivateRuns(capabilityId: string, version: string, runIds?: readonly string[]): Promise<void>;
   assertManagedCapability(capabilityId: string): void;
 }

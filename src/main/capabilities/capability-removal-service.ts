@@ -80,7 +80,7 @@ export class CapabilityRemovalService {
           try {
             if (!capabilities.sessionCapabilitiesMatch(capabilityId, expectedSessions.records)) throw safe();
             await this.deps.installer.restore(recovery);
-            if (deactivated) await coordinator.reactivateRuns(capabilityId, installation.activeVersion!);
+            if (deactivated) await coordinator.reactivateRuns(capabilityId, installation.activeVersion!, runIds);
             if (!capabilities.sessionCapabilitiesMatch(capabilityId, review.sessions.records)) throw safe();
             await this.deps.installer.cleanup(recovery);
             repository.finishRemovalRecovery(operationId, recovery.ownerToken);

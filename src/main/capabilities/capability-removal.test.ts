@@ -42,7 +42,7 @@ async function fixture(active = false) {
     assertManagedCapability: vi.fn(), activeRunCount: () => capabilities.listActiveRunsByCapabilityId(capabilityId).length,
     listActiveRuns: () => capabilities.listActiveRunsByCapabilityId(capabilityId), assertRunsIdle: vi.fn().mockResolvedValue(undefined),
     deactivateRuns: vi.fn(async () => { const exact = coordinator.listActiveRuns(); deactivatedRunIds.push([...exact]); for (const runId of exact) { capabilities.transitionSessionCapability({ runId, capabilityId, version: "2.0.0", to: "pending_deactivation" }); capabilities.transitionSessionCapability({ runId, capabilityId, version: "2.0.0", to: "inactive" }); } }),
-    reactivateRuns: vi.fn(async () => { reactivatedRunIds.push(sessions.records.filter((row) => row.status === "active").map((row) => row.runId)); capabilities.restoreSessionCapabilities(sessions); }), finalizeDeactivation: vi.fn(), reloadRuns: vi.fn(), restoreRuns: vi.fn(),
+    reactivateRuns: vi.fn(async (_id: string, _version: string, runIds: readonly string[] = []) => { reactivatedRunIds.push([...runIds]); capabilities.restoreSessionCapabilities(sessions); }), finalizeDeactivation: vi.fn(), reloadRuns: vi.fn(), restoreRuns: vi.fn(),
   };
   const refresh = vi.fn().mockResolvedValue(undefined), catalog = { refresh, get: vi.fn(() => repository.getByPackageName(packageName) ? { descriptor: { manifest: { id: capabilityId, version: "2.0.0" } } } : undefined) };
   const fs = { rename: vi.fn(rename), rm: vi.fn(rm) };
@@ -97,7 +97,7 @@ describe("managed capability removal", () => {
   });
   it("restores pointer, database, catalog and every run after publication failure", async () => {
     const f = await fixture(true); f.refresh.mockRejectedValueOnce(new Error("catalog")); const dto = await f.inspect(); await expect(f.service.remove(f.accept(dto))).rejects.toThrow("package_remove_failed"); await f.restored();
-    expect(f.coordinator.reactivateRuns).toHaveBeenCalledWith(capabilityId, "2.0.0"); expect(f.deactivatedRunIds).toEqual([["run-1", "run-2"]]); expect(f.reactivatedRunIds).toEqual([["run-1", "run-2"]]); expect(f.coordinator.listActiveRuns()).toEqual(["run-1", "run-2"]); expect(f.refresh).toHaveBeenCalledTimes(2);
+    expect(f.coordinator.reactivateRuns).toHaveBeenCalledWith(capabilityId, "2.0.0", ["run-1", "run-2"]); expect(f.deactivatedRunIds).toEqual([["run-1", "run-2"]]); expect(f.reactivatedRunIds).toEqual(f.deactivatedRunIds); expect(f.reactivatedRunIds).toEqual([["run-1", "run-2"]]); expect(f.coordinator.listActiveRuns()).toEqual(["run-1", "run-2"]); expect(f.refresh).toHaveBeenCalledTimes(2);
   });
   it("restores garbage-collected directories when a later GC rename fails", async () => {
     const f = await fixture(); f.fs.rename.mockImplementationOnce(rename).mockImplementationOnce(rename).mockRejectedValueOnce(new Error("gc")); const dto = await f.inspect(); await expect(f.service.remove(f.accept(dto))).rejects.toThrow("package_remove_failed"); await f.restored(); await expect(access(f.layout.packageVersionRoot(capabilityId, "1.0.0"))).resolves.toBeUndefined();
@@ -120,13 +120,13 @@ describe("managed capability removal", () => {
     f.repository.createUpdateRecovery({ operationId: "update-old", ownerToken: "owner-old", packageName, capabilityId, stage: "prepared",
       previousPointer: { packageName, capabilityId, version: "1.0.0", integrity: "sha512-old", contentDigest: "old-digest", manifestPath: "./capability.json", entryPath: "./index.js" },
       candidatePointer: { packageName, capabilityId, version: "3.0.0", integrity: "sha512-next", contentDigest: "next-digest", manifestPath: "./capability.json", entryPath: "./index.js" },
-      previousInstallation: { ...f.before.installation!, activeVersion: "1.0.0", activeIntegrity: "sha512-old", activeContentDigest: "old-digest", createdAt: f.before.installation!.createdAt.getTime(), updatedAt: f.before.installation!.updatedAt.getTime() },
+      previousInstallation: { ...f.before.installation!, itemKind: "capability" as const, activeVersion: "1.0.0", activeIntegrity: "sha512-old", activeContentDigest: "old-digest", createdAt: f.before.installation!.createdAt.getTime(), updatedAt: f.before.installation!.updatedAt.getTime() },
       configuration: { capabilityId, settings: [] }, sessions: [], obsoleteSecretRefs: [] });
     const beforeJournal = f.repository.listUpdateRecoveries()[0]; const dto = await f.inspect(); await f.service.remove(f.accept(dto));
     const previousRoot = f.layout.packageVersionRoot(capabilityId, "1.0.0"), candidateRoot = f.layout.packageVersionRoot(capabilityId, "3.0.0");
     await expect(access(previousRoot)).resolves.toBeUndefined(); await expect(access(candidateRoot)).resolves.toBeUndefined();
     expect(await readFile(join(previousRoot, "index.js"), "utf8")).toBe("exports.version = '1.0.0';"); expect(await readFile(join(candidateRoot, "index.js"), "utf8")).toBe("exports.version = '3.0.0';");
-    const afterJournal = f.repository.listUpdateRecoveries()[0]; expect(afterJournal.previousPointer.version).toBe(beforeJournal.previousPointer.version); expect(afterJournal.candidatePointer.version).toBe(beforeJournal.candidatePointer.version);
+    const afterJournal = f.repository.listUpdateRecoveries()[0]; expect(afterJournal).toEqual(beforeJournal);
   });
   it("retains exact session associations until removal commits", async () => {
     const f = await fixture(true); const dto = await f.inspect(); expect(f.capabilities.snapshotSessionCapabilities(capabilityId)).toEqual(f.before.sessions); await f.service.cancel(dto.inspectionId); expect(f.capabilities.snapshotSessionCapabilities(capabilityId)).toEqual(f.before.sessions);
