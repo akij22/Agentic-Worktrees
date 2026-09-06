@@ -352,12 +352,24 @@ describe("explicit capability updates", () => {
     expect(f.verifier.verify).not.toHaveBeenCalled();
     await f.service.cancel(dto.inspectionId);
   });
+  it("rejects an update payload omitting packageName before consuming its lease", async () => {
+    const f = await fixture();
+    const dto = await f.inspect();
+    const payload: Partial<ReturnType<typeof f.accept>> = f.accept(dto);
+    delete payload.packageName;
+    await expect(f.service.update(payload as never)).rejects.toMatchObject({ code: "package_permission_denied" });
+    expect(f.verifier.verify).not.toHaveBeenCalled();
+    expect(f.repository.getByPackageName(packageName)?.activeVersion).toBe("1.0.0");
+    await f.service.cancel(dto.inspectionId);
+  });
   it("rejects using install acceptance to consume an update lease", async () => {
     const f = await fixture();
     const dto = await f.inspect();
-    await expect(f.service.install(f.accept(dto))).rejects.toThrow(
-      "package_permission_denied",
-    );
+    await expect(f.service.install({
+      inspectionId: dto.inspectionId, acceptedPackageName: dto.packageName,
+      acceptedVersion: dto.resolvedVersion, acceptedIntegrity: dto.integrity,
+      acceptedPermissionDigest: dto.permissionDigest,
+    })).rejects.toThrow("package_permission_denied");
     expect(f.verifier.verify).not.toHaveBeenCalled();
   });
   it.each([

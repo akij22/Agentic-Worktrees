@@ -227,6 +227,15 @@ const failure = async (promise: Promise<unknown>) =>
   );
 
 describe("CapabilityDistributionService direct consent integration", () => {
+  it("rejects an install payload smuggling the update packageName discriminator", async () => {
+    const f = setup();
+    const dto = await f.service.inspect({ sourceSpec: staged.requestedSpec });
+    const payload = { ...consent(dto), packageName: dto.packageName };
+    await expect(f.service.install(payload)).rejects.toMatchObject({ code: "package_permission_denied" });
+    expect(f.verifier).not.toHaveBeenCalled();
+    expect(f.installer).not.toHaveBeenCalled();
+    await f.service.cancel(dto.inspectionId);
+  });
   it("inspects a Community package statically and holds its only lock", async () => {
     const f = setup();
     const events: unknown[] = [];

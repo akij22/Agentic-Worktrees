@@ -458,7 +458,7 @@ export class CapabilityDistributionService {
             inspectedForAccept.permissionDigest
         )
           throw new Error("package_permission_denied");
-        if ((request.intent === "update") !== "packageName" in payload)
+        if ((request.intent === "update") !== ("packageName" in payload))
           throw new Error("package_permission_denied");
         const found = inspectedForAccept;
         if (request.intent === "update") {
@@ -714,7 +714,12 @@ export class CapabilityDistributionService {
     return request.intent === "update" ? lease.ready.catch((error: unknown) => { throw updateFailure(error); }) : lease.ready;
   }
   async install(input: PackageInstallRequest): Promise<CapabilityDetailDto> {
-    const request = packageInstallRequestSchema.parse(input);
+    // Reject the update discriminator before the compatible schema strips unknown fields.
+    if (input && typeof input === "object" && "packageName" in input)
+      throw updateFailure(undefined, "package_permission_denied");
+    const parsed = packageInstallRequestSchema.safeParse(input);
+    if (!parsed.success) throw updateFailure(undefined, "package_permission_denied");
+    const request = parsed.data;
     return this.registry.accept(request.inspectionId, request);
   }
   async update(input: PackageUpdateRequest): Promise<CapabilityDetailDto> {

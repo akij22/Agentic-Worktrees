@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { managedPackageInstallationRecordSchema, packageErrorCodeSchema, packageNameSchema } from "./schemas";
+import { managedPackageStateSchema, packageErrorCodeSchema, packageNameSchema, packageReviewStatusSchema, packageSourceSpecSchema, packageTrustSchema } from "./schemas";
 
 const identifier = z.string().min(1).max(256).regex(/^[a-zA-Z0-9_.:@-]+$/);
 const metadata = z.string().min(1).max(1024).regex(/^[a-zA-Z0-9_.:+/=-]+$/);
@@ -9,6 +9,15 @@ export const updateRecoveryPointerSchema = z.object({
   integrity: metadata, contentDigest: metadata, manifestPath: relativeFile, entryPath: relativeFile,
 }).strict();
 const timestamp = z.number().int().nonnegative();
+// Durable JSON contract: deliberately independent of Date-valued DB entities.
+export const updateRecoveryInstallationSnapshotSchema = z.object({
+  packageName: packageNameSchema, itemKind: z.literal("capability"), itemId: identifier,
+  requestedSpec: packageSourceSpecSchema, activeVersion: identifier,
+  activeIntegrity: metadata, activeContentDigest: metadata,
+  trust: packageTrustSchema, reviewStatus: packageReviewStatusSchema,
+  acceptedPermissionDigest: metadata.optional(), state: managedPackageStateSchema,
+  errorCode: packageErrorCodeSchema.optional(), createdAt: timestamp, updatedAt: timestamp,
+}).strict();
 const configuration = z.object({
   capabilityId: identifier,
   installation: z.object({ capabilityId: identifier, version: identifier, permissionDigest: metadata, configured: z.boolean(), createdAt: timestamp, updatedAt: timestamp }).strict().optional(),
@@ -26,7 +35,7 @@ export const updateRecoverySchema = z.object({
   operationId: identifier, ownerToken: identifier, packageName: packageNameSchema, capabilityId: identifier,
   stage: z.enum(["prepared", "committed", "recovering", "conflict", "cleanup_pending"]),
   previousPointer: updateRecoveryPointerSchema, candidatePointer: updateRecoveryPointerSchema,
-  previousInstallation: managedPackageInstallationRecordSchema.extend({ itemId: identifier, createdAt: timestamp, updatedAt: timestamp }).strict(),
+  previousInstallation: updateRecoveryInstallationSnapshotSchema,
   configuration, sessions: z.array(session), obsoleteSecretRefs: z.array(identifier), errorCode: packageErrorCodeSchema.optional(),
 }).strict().superRefine((value, ctx) => {
   if ([value.previousPointer, value.candidatePointer].some((p) => p.packageName !== value.packageName || p.capabilityId !== value.capabilityId) || value.previousInstallation.packageName !== value.packageName || value.previousInstallation.itemId !== value.capabilityId || value.configuration.capabilityId !== value.capabilityId || value.sessions.some((s) => s.capabilityId !== value.capabilityId) || value.previousInstallation.activeVersion !== value.previousPointer.version || value.previousInstallation.activeIntegrity !== value.previousPointer.integrity || value.previousInstallation.activeContentDigest !== value.previousPointer.contentDigest)

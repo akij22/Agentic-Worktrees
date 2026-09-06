@@ -46,7 +46,7 @@ Activation also checks SQLite quarantine/journal state, so a stale unblocked cat
 - `src/main/capabilities/capability-update-lifecycle.test.ts`: 28 direct lifecycle cases using SQLite, temporary executable layouts, fakes and deterministic barriers. Includes a real CapabilityService coordinator with first-provider success followed by second-provider failure and assertions for restored first/second runtimes, host settings, pointer, managed row, configuration, catalog, associations and old executable retention.
 - This report and `progress.md`: final scope, approved limitation and exact verification evidence.
 
-## Direct lifecycle cases: 28
+## Initial direct lifecycle cases: 28 (`a392386`)
 
 1. Omitted intent defaults to install; explicit update survives parsing.
 2. Fresh-install collision remains refused.
@@ -82,7 +82,7 @@ Activation also checks SQLite quarantine/journal state, so a stale unblocked cat
 - Foreign-pointer precommit journal regression: RED **1 failed / 27 passed / 28 total**; then GREEN after verifying restored state before deleting the journal.
 - The first 19 lifecycle cases were inherited from the interrupted worktree; their original RED execution was not witnessed in this resumed session. They were rerun repeatedly and are not counted as new discovery cases.
 
-## Final verification
+## Initial update-gate verification (`a392386`)
 
 - Broad capability/package/shared-package/database selection: **32 files / 365 tests passed**.
 - Focused Task 9 selection: **7 files / 114 tests passed** — lifecycle 28, recovery journal 7, configuration 8, block policy 1, installer 33, discovery 10, metadata 27. Installer totals include earlier install regressions; discovery remains exactly 37 tests and is separate from the lifecycle gate.
@@ -96,3 +96,34 @@ Activation also checks SQLite quarantine/journal state, so a stale unblocked cat
 ## Remaining scope and limitations
 
 Remove/GC is a separate gate. Old executable versions are deliberately retained rather than garbage-collected here. Interrupted provider transactions are quarantined for explicit recovery, not replayed automatically at startup. Cleanup retries do not activate sessions. The cooperative-writer boundary above is an explicit accepted design limitation, not an outstanding implementation claim. The known renderer typecheck blocker remains outside this task.
+
+## Review fix — dedicated snapshots, single-transaction recovery, explicit tuple guard
+
+All three requested review changes are implemented; remove remains deferred. This section supersedes the initial test counts above.
+
+### Files changed in this review commit
+
+- `src/shared/packages/update-recovery.ts`: replaced the DB installation schema extension with dedicated strict `updateRecoveryInstallationSnapshotSchema`. Timestamps are numeric JSON values; a recovery installation must identify a capability and carry active metadata. Shared enum primitives are reused, but the Date-valued entity schema is not imported or extended.
+- `src/main/packages/package-repository.ts`: public transition/finalization APIs own their transactions; private `advanceUpdateRecoveryWithinTransaction` and `finishUpdateRecoveryWithinTransaction` require an existing transaction and perform only statements. Startup quarantine and cleanup completion call those helpers directly, preserving one atomic transaction without nested transaction wrappers.
+- `src/main/packages/package-update-recovery.test.ts`: six additional cases prove numeric create/JSON/parse/list roundtrip, rejection of Date-valued/unrelated skill entities, single-BEGIN/COMMIT quarantine and cleanup with populated journals, and full rollback after injected late SQLite failures. Journal suite now contains **13 cases**.
+- `src/main/capabilities/capability-distribution-service.ts`: guard now uses exactly `(request.intent === "update") !== ("packageName" in payload)`. Install rejects a raw update `packageName` discriminator before parsing, so unknown-field stripping cannot hide it. Invalid install input receives a stable permission-denied error without consuming consent.
+- `src/main/capabilities/capability-distribution-service.test.ts`: added direct fresh-install smuggling refusal, asserting no verifier/installer invocation. Suite now contains **35 cases**.
+- `src/main/capabilities/capability-update-lifecycle.test.ts`: added direct update-without-packageName refusal without lease consumption; the cross-intent test now sends an actual install-only tuple into the update lease, exercising the parenthesized guard. Lifecycle suite now contains **29 cases**.
+- This report and `progress.md`: updated review changes, actual RED/GREEN evidence and final counts.
+
+### Review RED/GREEN evidence
+
+RED before the fixes: **3 files / 75 tests: 4 failed, 71 passed**. Failures demonstrated skill-entity acceptance, nested SAVEPOINT/RELEASE execution in quarantine and cleanup, and successful installation of a smuggled update discriminator. Numeric timestamps already worked with the previous explicit overrides; the new test confirms that behavior while the refactor removes coupling to the entity schema. Likewise, this SQLite driver already implements nested wrappers using savepoints rather than raising a nested-BEGIN error; the new helpers deliberately eliminate those nested wrappers as requested.
+
+A broad strict install schema was tested and rejected because it broke the approved unknown-field stripping regression. The final solution rejects only the update discriminator at the service boundary and preserves the shared schema's compatible stripping behavior. No unrelated contract change remains.
+
+GREEN final selections:
+
+- Review recovery/distribution/lifecycle/shared-schema suites: **4 files / 81 tests passed**.
+- Task 9 focused selection: **7 files / 121 tests passed** (29 lifecycle, 13 journal, 8 configuration, 1 block policy, 33 installer, 10 discovery, 27 metadata).
+- Broad capability/package/shared-package/database selection: **32 files / 373 tests passed**.
+- Task 7 regression selection: **7 files / 150 tests passed**.
+- Task 8 + repository regression selection: **9 files / 100 tests passed**.
+- Typecheck: only known `CodingAgentSession.tsx:387` `skillInvocations` Props error.
+- Scoped local-config ESLint over the six changed TypeScript files: **0 errors / 2 warnings**.
+- `git diff --check`: passed. No database definition changed in this review, so no new migration was required.

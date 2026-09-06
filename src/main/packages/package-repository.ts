@@ -93,25 +93,29 @@ export class ManagedPackageRepository {
     } catch { throw new Error("package_update_failed"); }
   }
   advanceUpdateRecovery(operationId: string, ownerToken: string, stage: UpdateRecovery["stage"], errorCode?: PackageErrorCode): void {
-    this.sqlite.transaction(() => {
-      const current = this.listUpdateRecoveries().find((row) => row.operationId === operationId && row.ownerToken === ownerToken);
-      if (!current) throw new Error("package_update_failed");
-      const next = updateRecoverySchema.parse({ ...current, stage, ...(errorCode ? { errorCode } : {}) });
-      this.sqlite.prepare("UPDATE managed_package_update_recoveries SET snapshot=? WHERE operation_id=? AND owner_token=?")
-        .run(JSON.stringify(next), operationId, ownerToken);
-    })();
+    this.sqlite.transaction(() => this.advanceUpdateRecoveryWithinTransaction(operationId, ownerToken, stage, errorCode))();
+  }
+  private advanceUpdateRecoveryWithinTransaction(operationId: string, ownerToken: string, stage: UpdateRecovery["stage"], errorCode?: PackageErrorCode): void {
+    if (!this.sqlite.inTransaction) throw new Error("package_update_failed");
+    const current = this.listUpdateRecoveries().find((row) => row.operationId === operationId && row.ownerToken === ownerToken);
+    if (!current) throw new Error("package_update_failed");
+    const next = updateRecoverySchema.parse({ ...current, stage, ...(errorCode ? { errorCode } : {}) });
+    this.sqlite.prepare("UPDATE managed_package_update_recoveries SET snapshot=? WHERE operation_id=? AND owner_token=?")
+      .run(JSON.stringify(next), operationId, ownerToken);
   }
   finishUpdateRecovery(operationId: string, ownerToken: string): void {
-    this.sqlite.transaction(() => {
-      if (this.sqlite.prepare("DELETE FROM managed_package_update_recoveries WHERE operation_id=? AND owner_token=?").run(operationId, ownerToken).changes !== 1)
-        throw new Error("package_update_failed");
-    })();
+    this.sqlite.transaction(() => this.finishUpdateRecoveryWithinTransaction(operationId, ownerToken))();
+  }
+  private finishUpdateRecoveryWithinTransaction(operationId: string, ownerToken: string): void {
+    if (!this.sqlite.inTransaction) throw new Error("package_update_failed");
+    if (this.sqlite.prepare("DELETE FROM managed_package_update_recoveries WHERE operation_id=? AND owner_token=?").run(operationId, ownerToken).changes !== 1)
+      throw new Error("package_update_failed");
   }
   completeRecoveredCleanup(operationId: string, ownerToken: string): void {
     this.sqlite.transaction(() => {
       const recovery = this.listUpdateRecoveries().find((row) => row.operationId === operationId && row.ownerToken === ownerToken && row.stage === "cleanup_pending");
       if (!recovery) throw new Error("package_update_failed");
-      this.finishUpdateRecovery(operationId, ownerToken);
+      this.finishUpdateRecoveryWithinTransaction(operationId, ownerToken);
       if (!this.listUpdateRecoveries().some((row) => row.packageName === recovery.packageName)) {
         this.sqlite.prepare("UPDATE managed_package_installations SET state='installed', error_code=NULL WHERE package_name=? AND item_id=? AND active_version=? AND active_integrity=? AND active_content_digest=? AND state='blocked' AND error_code='package_update_failed'")
           .run(recovery.packageName, recovery.capabilityId, recovery.candidatePointer.version, recovery.candidatePointer.integrity, recovery.candidatePointer.contentDigest);
@@ -125,7 +129,7 @@ export class ManagedPackageRepository {
           .run(row.packageName, row.capabilityId);
         this.sqlite.prepare("UPDATE managed_package_operations SET status='failed', error_code='package_update_failed', updated_at=? WHERE operation_id=?")
           .run(Date.now(), row.operationId);
-        if (row.stage !== "cleanup_pending") this.advanceUpdateRecovery(row.operationId, row.ownerToken, "conflict", "package_update_failed");
+        if (row.stage !== "cleanup_pending") this.advanceUpdateRecoveryWithinTransaction(row.operationId, row.ownerToken, "conflict", "package_update_failed");
       }
     })();
   }
