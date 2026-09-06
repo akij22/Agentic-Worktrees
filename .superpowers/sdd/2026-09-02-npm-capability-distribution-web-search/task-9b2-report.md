@@ -37,13 +37,13 @@ The durable removal-recovery row contains relative/serializable snapshots and GC
 4. Exact active-run-count mismatch refusal.
 5. Exact active-version mismatch refusal.
 6. Idle-run rejection before persistent mutation.
-7. Multi-run deactivation receives both exact run IDs, persists both as inactive, and never auto-reactivates.
+7. A recording coordinator proves multi-run deactivation receives only both exact reviewed run IDs, persists both as inactive, and never auto-reactivates.
 8. Pointer-detach failure exact restoration.
-9. Catalog-publication failure restores pointer/DB/catalog and reactivates both exact runs.
+9. Catalog-publication failure restores pointer/DB/catalog and the recording coordinator reactivates exactly the same reviewed run-ID set.
 10. Later GC failure restores already staged version directories.
 11. Reactivation failure retains conflict recovery and blocks installation.
-12. A distinct old version referenced by a real inactive session association survives GC, with the association unchanged.
-13. Distinct previous/candidate versions referenced by a durable update recovery journal both survive GC.
+12. A distinct old version referenced by a real inactive session association survives GC recursively (including its executable sentinel), with the exact association unchanged.
+13. Distinct previous/candidate versions referenced by a durable update recovery journal both survive GC recursively, with exact journal version fields unchanged.
 14. Session/chat associations remain exact through inspection cancellation.
 15. Cleanup failure persists `cleanup_pending` recovery.
 16. Startup reconciliation completes pending cleanup without activation.
