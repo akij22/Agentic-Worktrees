@@ -54,6 +54,7 @@ import {
   type ConsentLeaseScheduler,
 } from "./consent-lease-registry";
 import { getSqlite } from "../database/client";
+import type { WebSearchMigration, WebSearchMigrationResult } from "./web-search-migration";
 
 const freeze = <T>(value: T): Readonly<T> => {
   if (value !== null && typeof value === "object") {
@@ -133,6 +134,7 @@ export class CapabilityDistributionService {
       packageLock?: PackageLock;
       clock?: () => number;
       scheduler?: ConsentLeaseScheduler;
+      webSearchMigration?: WebSearchMigration;
     },
   ) {
     this.repository = deps.repository ?? new ManagedPackageRepository();
@@ -745,6 +747,12 @@ export class CapabilityDistributionService {
   remove(input: PackageRemoveRequest): Promise<void> { return this.removal.remove(input); }
   async cancel(operationId: string) {
     return this.registry.cancel(operationId);
+  }
+  async reconcileWebSearchMigration(signal: AbortSignal): Promise<WebSearchMigrationResult> {
+    return this.deps.webSearchMigration?.reconcile(signal) ?? "not_needed";
+  }
+  async retryPendingMigrations(signal: AbortSignal = new AbortController().signal): Promise<void> {
+    await this.deps.webSearchMigration?.retry(signal);
   }
   async reconcileInterruptedOperations() {
     return this.lock.runExclusive(async (owner) => {

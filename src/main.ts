@@ -28,6 +28,14 @@ import { createCapabilityCatalog } from "./main/capabilities/catalog";
 import { InstalledCapabilityCatalog } from "./main/capabilities/installed-catalog";
 import { ManagedPackageRepository } from "./main/packages/package-repository";
 import { createManagedPackageLayout } from "./main/packages/storage-layout";
+import { NpmPackageAcquirer } from "./main/packages/npm-acquirer";
+import { OfficialCatalogService } from "./main/packages/catalog/official-catalog";
+import { PackageLock } from "./main/packages/package-lock";
+import { CapabilityPackageInspector } from "./main/capabilities/package-inspector";
+import { CapabilityPackageInstaller } from "./main/capabilities/capability-package-installer";
+import { createElectronCapabilityPackageVerifier } from "./main/capabilities/package-verifier";
+import { WebSearchMigration } from "./main/capabilities/web-search-migration";
+import { getSqlite } from "./main/database/client";
 import { SkillRepository } from "./main/skills/skill-repository";
 import { SkillService } from "./main/skills/skill-service";
 import { createSkillStorageLayout } from "./main/skills/skill-installer";
@@ -156,6 +164,24 @@ const initializeCapabilities = async (): Promise<CapabilityService> => {
   } catch {
     throw new Error("capability_catalog_unavailable");
   }
+  const packageLock = new PackageLock(packageLayout.root + "/.packages.lock");
+  const webSearchMigration = new WebSearchMigration({
+    capabilities: repository,
+    packages: packageRepository,
+    officialCatalog: new OfficialCatalogService(),
+    acquirer: new NpmPackageAcquirer(packageLayout),
+    inspector: new CapabilityPackageInspector(),
+    verifier: createElectronCapabilityPackageVerifier(),
+    installer: new CapabilityPackageInstaller(
+      packageLayout,
+      packageRepository,
+      repository,
+      <T>(work: () => T) => getSqlite().transaction(work)(),
+      { refreshCatalog: () => catalog.refresh() },
+    ),
+    lock: packageLock,
+  });
+  await webSearchMigration.reconcile(new AbortController().signal);
   const credentials = createElectronCapabilityCredentialStore(
     path.join(app.getPath("userData"), "capability-credentials.bin"),
   );

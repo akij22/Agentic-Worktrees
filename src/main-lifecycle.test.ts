@@ -26,12 +26,19 @@ const mocks = vi.hoisted(() => {
     registerIpcHandlers: vi.fn(),
     configureCapabilityIpc: vi.fn(),
     configureSkillIpc: vi.fn(),
-    reconcileCapabilities: vi.fn(() => Promise.resolve()),
+    reconcileCapabilities: vi.fn(() => {
+      mocks.startupOrder.push("reconcile");
+      return Promise.resolve();
+    }),
     stopCapabilities: vi.fn(() => Promise.resolve()),
     stopTerminals: vi.fn(),
     startupOrder: [] as string[],
     catalogRefresh: vi.fn(async () => {
       mocks.startupOrder.push("refresh");
+    }),
+    reconcileMigration: vi.fn(async () => {
+      mocks.startupOrder.push("migration");
+      return "not_needed" as const;
     }),
   };
 });
@@ -113,7 +120,26 @@ vi.mock("./main/packages/package-repository", () => ({
   ManagedPackageRepository: class {},
 }));
 vi.mock("./main/packages/storage-layout", () => ({
-  createManagedPackageLayout: vi.fn(() => ({})),
+  createManagedPackageLayout: vi.fn(() => ({ root: "/tmp/packages" })),
+}));
+vi.mock("./main/packages/npm-acquirer", () => ({
+  NpmPackageAcquirer: class {},
+}));
+vi.mock("./main/packages/catalog/official-catalog", () => ({
+  OfficialCatalogService: class {},
+}));
+vi.mock("./main/packages/package-lock", () => ({ PackageLock: class {} }));
+vi.mock("./main/capabilities/package-inspector", () => ({
+  CapabilityPackageInspector: class {},
+}));
+vi.mock("./main/capabilities/capability-package-installer", () => ({
+  CapabilityPackageInstaller: class {},
+}));
+vi.mock("./main/capabilities/package-verifier", () => ({
+  createElectronCapabilityPackageVerifier: vi.fn(() => ({})),
+}));
+vi.mock("./main/database/client", () => ({
+  getSqlite: vi.fn(() => ({ transaction: (work: () => unknown) => work })),
 }));
 vi.mock("./main/capabilities/installed-catalog", () => ({
   InstalledCapabilityCatalog: class {},
@@ -143,6 +169,11 @@ vi.mock("./main/capabilities/catalog", () => ({
     get: vi.fn(),
   })),
 }));
+vi.mock("./main/capabilities/web-search-migration", () => ({
+  WebSearchMigration: class {
+    reconcile = mocks.reconcileMigration;
+  },
+}));
 vi.mock("./main/skills/skill-repository", () => ({
   SkillRepository: class {
     listInstallations = vi.fn(() => []);
@@ -169,8 +200,7 @@ vi.mock("./main/workspace/workspace-terminal-service", () => ({
 }));
 
 const flushPromises = async (): Promise<void> => {
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let index = 0; index < 8; index += 1) await Promise.resolve();
 };
 
 it("does not register activation or create windows until auth bootstrap settles", async () => {
@@ -192,7 +222,15 @@ it("does not register activation or create windows until auth bootstrap settles"
   await flushPromises();
 
   expect(mocks.windows).toHaveLength(1);
-  expect(mocks.startupOrder).toEqual(["refresh", "host", "service"]);
+  expect(mocks.startupOrder).toEqual([
+    "refresh",
+    "migration",
+    "host",
+    "service",
+    "reconcile",
+  ]);
+  expect(mocks.reconcileMigration).toHaveBeenCalledOnce();
+  expect(mocks.reconcileCapabilities).toHaveBeenCalledOnce();
   expect(mocks.listeners.has("activate")).toBe(true);
   expect(mocks.autoDiscoverAgent).toHaveBeenCalledTimes(2);
   expect(mocks.autoDiscoverAgent).toHaveBeenCalledWith("opencode");
