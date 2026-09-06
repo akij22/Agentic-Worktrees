@@ -53,7 +53,7 @@ async function fixture(active = false) {
   const accept = (dto: Awaited<ReturnType<typeof inspect>>) => ({ inspectionId: dto.inspectionId, packageName, acceptedActiveVersion: dto.activeVersion, acceptedActiveRunCount: active ? 2 : 0 });
   const before = { installation: repository.getByPackageName(packageName), configuration: capabilities.snapshotInstalledConfiguration(capabilityId), sessions, pointer: await readFile(`${layout.activePointerPath(capabilityId)}.json`) };
   const restored = async () => { expect(repository.getByPackageName(packageName)).toEqual(before.installation); expect(capabilities.snapshotInstalledConfiguration(capabilityId)).toEqual(before.configuration); expect(await readFile(`${layout.activePointerPath(capabilityId)}.json`)).toEqual(before.pointer); expect(capabilities.snapshotSessionCapabilities(capabilityId)).toEqual(before.sessions); };
-  return { root, layout, db, repository, capabilities, coordinator, refresh, catalog, fs, installer, credentials, verifier, acquirer, service, inspect, accept, before, restored };
+  return { root, layout, db, repository, capabilities, coordinator, refresh, catalog, fs, installer, credentials, verifier, acquirer, lock, service, inspect, accept, before, restored };
 }
 
 describe("managed capability removal", () => {
@@ -85,14 +85,18 @@ describe("managed capability removal", () => {
   it("rejects non-idle active runs before persistent mutation", async () => {
     const f = await fixture(true); f.coordinator.assertRunsIdle.mockRejectedValueOnce(new Error("busy")); const dto = await f.inspect(); await expect(f.service.remove(f.accept(dto))).rejects.toThrow("package_install_failed"); await f.restored();
   });
-  it("deactivates every active run and never auto-reactivates after success", async () => {
-    const f = await fixture(true); const dto = await f.inspect(); await f.service.remove(f.accept(dto)); expect(f.coordinator.deactivateRuns).toHaveBeenCalledOnce(); expect(f.coordinator.finalizeDeactivation).toHaveBeenCalledOnce(); expect(f.coordinator.reactivateRuns).not.toHaveBeenCalled();
+  it("deactivates every exact active run and never auto-reactivates after success", async () => {
+    const f = await fixture(true); expect(f.coordinator.listActiveRuns()).toEqual(["run-1", "run-2"]); const dto = await f.inspect(); await f.service.remove(f.accept(dto));
+    expect(f.coordinator.deactivateRuns).toHaveBeenCalledWith(capabilityId); expect(f.coordinator.listActiveRuns()).toEqual([]);
+    expect(f.capabilities.snapshotSessionCapabilities(capabilityId).records.map(({ runId, status }) => ({ runId, status }))).toEqual([{ runId: "run-1", status: "inactive" }, { runId: "run-2", status: "inactive" }]);
+    expect(f.coordinator.finalizeDeactivation).toHaveBeenCalledOnce(); expect(f.coordinator.reactivateRuns).not.toHaveBeenCalled();
   });
   it("restores the exact snapshot when pointer detachment fails", async () => {
     const f = await fixture(true); f.fs.rename.mockRejectedValueOnce(new Error("pointer")); const dto = await f.inspect(); await expect(f.service.remove(f.accept(dto))).rejects.toThrow("package_remove_failed"); await f.restored(); expect(f.coordinator.reactivateRuns).toHaveBeenCalledOnce();
   });
-  it("restores pointer, database, catalog and sessions when catalog publication fails", async () => {
-    const f = await fixture(true); f.refresh.mockRejectedValueOnce(new Error("catalog")); const dto = await f.inspect(); await expect(f.service.remove(f.accept(dto))).rejects.toThrow("package_remove_failed"); await f.restored(); expect(f.refresh).toHaveBeenCalledTimes(2);
+  it("restores pointer, database, catalog and every run after publication failure", async () => {
+    const f = await fixture(true); f.refresh.mockRejectedValueOnce(new Error("catalog")); const dto = await f.inspect(); await expect(f.service.remove(f.accept(dto))).rejects.toThrow("package_remove_failed"); await f.restored();
+    expect(f.coordinator.reactivateRuns).toHaveBeenCalledWith(capabilityId, "2.0.0"); expect(f.coordinator.listActiveRuns()).toEqual(["run-1", "run-2"]); expect(f.refresh).toHaveBeenCalledTimes(2);
   });
   it("restores garbage-collected directories when a later GC rename fails", async () => {
     const f = await fixture(); f.fs.rename.mockImplementationOnce(rename).mockImplementationOnce(rename).mockRejectedValueOnce(new Error("gc")); const dto = await f.inspect(); await expect(f.service.remove(f.accept(dto))).rejects.toThrow("package_remove_failed"); await f.restored(); await expect(access(f.layout.packageVersionRoot(capabilityId, "1.0.0"))).resolves.toBeUndefined();
@@ -100,8 +104,24 @@ describe("managed capability removal", () => {
   it("quarantines durable recovery when runtime reactivation fails", async () => {
     const f = await fixture(true); f.refresh.mockRejectedValueOnce(new Error("catalog")); f.coordinator.reactivateRuns.mockRejectedValueOnce(new Error("provider")); const dto = await f.inspect(); await expect(f.service.remove(f.accept(dto))).rejects.toThrow("package_remove_failed"); expect(f.repository.listRemovalRecoveries()).toHaveLength(1); expect(f.repository.getByPackageName(packageName)?.state).toBe("blocked");
   });
-  it("preserves session-associated active versions during garbage collection", async () => {
-    const f = await fixture(true); const dto = await f.inspect(); await f.service.remove(f.accept(dto)); await expect(access(f.layout.packageVersionRoot(capabilityId, "2.0.0"))).resolves.toBeUndefined();
+  it("preserves a distinct old version and unchanged real session association during GC", async () => {
+    const f = await fixture(true);
+    f.db.prepare("INSERT INTO runs (id,repository_id,worktree_id,title,prompt,status,created_at,updated_at) VALUES ('run-old','repo','wt','Old','','idle',1,1)").run();
+    f.capabilities.transitionSessionCapability({ runId: "run-old", capabilityId, version: "1.0.0", to: "pending_activation" });
+    f.capabilities.transitionSessionCapability({ runId: "run-old", capabilityId, version: "1.0.0", to: "active" });
+    f.capabilities.transitionSessionCapability({ runId: "run-old", capabilityId, version: "1.0.0", to: "pending_deactivation" });
+    f.capabilities.transitionSessionCapability({ runId: "run-old", capabilityId, version: "1.0.0", to: "inactive" });
+    const old = f.capabilities.snapshotSessionCapabilities(capabilityId).records.find((row) => row.runId === "run-old"); const dto = await f.inspect(); await f.service.remove(f.accept(dto));
+    await expect(access(f.layout.packageVersionRoot(capabilityId, "1.0.0"))).resolves.toBeUndefined(); expect(f.capabilities.snapshotSessionCapabilities(capabilityId).records.find((row) => row.runId === "run-old")).toEqual(old);
+  });
+  it("preserves versions referenced by a durable update recovery journal", async () => {
+    const f = await fixture();
+    f.repository.createUpdateRecovery({ operationId: "update-old", ownerToken: "owner-old", packageName, capabilityId, stage: "prepared",
+      previousPointer: { packageName, capabilityId, version: "1.0.0", integrity: "sha512-old", contentDigest: "old-digest", manifestPath: "./capability.json", entryPath: "./index.js" },
+      candidatePointer: { packageName, capabilityId, version: "3.0.0", integrity: "sha512-next", contentDigest: "next-digest", manifestPath: "./capability.json", entryPath: "./index.js" },
+      previousInstallation: { ...f.before.installation!, activeVersion: "1.0.0", activeIntegrity: "sha512-old", activeContentDigest: "old-digest", createdAt: f.before.installation!.createdAt.getTime(), updatedAt: f.before.installation!.updatedAt.getTime() },
+      configuration: { capabilityId, settings: [] }, sessions: [], obsoleteSecretRefs: [] });
+    const dto = await f.inspect(); await f.service.remove(f.accept(dto)); await expect(access(f.layout.packageVersionRoot(capabilityId, "1.0.0"))).resolves.toBeUndefined(); await expect(access(f.layout.packageVersionRoot(capabilityId, "3.0.0"))).resolves.toBeUndefined();
   });
   it("retains exact session associations until removal commits", async () => {
     const f = await fixture(true); const dto = await f.inspect(); expect(f.capabilities.snapshotSessionCapabilities(capabilityId)).toEqual(f.before.sessions); await f.service.cancel(dto.inspectionId); expect(f.capabilities.snapshotSessionCapabilities(capabilityId)).toEqual(f.before.sessions);
@@ -112,8 +132,12 @@ describe("managed capability removal", () => {
   it("reconciles cleanup-pending removal without activation", async () => {
     const f = await fixture(); f.fs.rm.mockRejectedValueOnce(new Error("cleanup")); const dto = await f.inspect(); await expect(f.service.remove(f.accept(dto))).rejects.toThrow(); await f.service.reconcileInterruptedOperations(); expect(f.repository.listRemovalRecoveries()).toHaveLength(0); expect(f.coordinator.reactivateRuns).not.toHaveBeenCalled();
   });
-  it("serializes a second removal inspection behind the consent lease", async () => {
-    const f = await fixture(); const first = await f.inspect(); let settled = false; const second = f.inspect().finally(() => { settled = true; }); await Promise.resolve(); expect(settled).toBe(false); await f.service.cancel(first.inspectionId); await expect(second).resolves.toMatchObject({ packageName });
+  it("serializes removal behind an update lock lease without mutation or deadlock", async () => {
+    const f = await fixture(); let release!: () => void; const gate = new Promise<void>((resolve) => { release = resolve; }); let entered!: () => void; const acquired = new Promise<void>((resolve) => { entered = resolve; });
+    const updateLease = f.lock.runExclusive(async () => { entered(); await gate; }); await acquired;
+    let settled = false; const removal = f.inspect().then((dto) => { settled = true; return dto; }); await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(settled).toBe(false); expect(f.fs.rename).not.toHaveBeenCalled(); expect(f.repository.getByPackageName(packageName)).toEqual(f.before.installation);
+    release(); await updateLease; const dto = await removal; await f.service.cancel(dto.inspectionId); await f.restored();
   });
   it("emits path-free frozen schema-valid removal progress", async () => {
     const f = await fixture(); const events: unknown[] = []; const unsubscribe = f.service.subscribe((event) => events.push(event)); const dto = await f.inspect(); await f.service.remove(f.accept(dto)); unsubscribe(); expect(events.length).toBeGreaterThan(1); for (const event of events) { expect(capabilityDistributionProgressSchema.parse(event)).toEqual(event); expect(Object.isFrozen(event)).toBe(true); expect(JSON.stringify(event)).not.toContain(f.root); }

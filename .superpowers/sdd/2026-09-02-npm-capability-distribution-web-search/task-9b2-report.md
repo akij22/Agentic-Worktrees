@@ -23,13 +23,13 @@ The durable removal-recovery row contains relative/serializable snapshots and GC
 - `src/main/capabilities/capability-removal-installer.ts` — reversible pointer/DB/catalog/GC commit, exact restoration, retention analysis, and cleanup.
 - `src/main/capabilities/capability-removal-service.ts` — inspection lease, exact consent, idle/deactivation orchestration, rollback/quarantine, secret cleanup, and reconciliation.
 - `src/main/capabilities/capability-distribution-service.ts` — removal facade and startup reconciliation integration; updates refuse packages with pending removal recovery.
-- `src/main/capabilities/capability-removal.test.ts` — 19 direct removal lifecycle cases.
+- `src/main/capabilities/capability-removal.test.ts` — 20 direct removal lifecycle cases.
 - `src/shared/ipc/schemas.test.ts` — strict removal request boundary and install-intent projection coverage.
 - This report and `progress.md` — completion evidence and ledger entry.
 
 `src/renderer/features/coding-agent/components/SessionMessages.tsx` was reverted to HEAD. Its unrelated `skillInvocations` Props addition only addressed the pre-existing renderer typecheck blocker and is not necessary for Task 9B2 removal.
 
-## Direct removal tests (19)
+## Direct removal tests (20)
 
 1. Immutable path-free inspection tuple, active count, and no npm/filesystem side effects.
 2. Successful pointer/configuration removal, stable-version retention, secret cleanup, and no activation.
@@ -37,22 +37,24 @@ The durable removal-recovery row contains relative/serializable snapshots and GC
 4. Exact active-run-count mismatch refusal.
 5. Exact active-version mismatch refusal.
 6. Idle-run rejection before persistent mutation.
-7. Multi-run deactivation/finalization without auto-reactivation.
+7. Multi-run deactivation receives both exact run IDs, persists both as inactive, and never auto-reactivates.
 8. Pointer-detach failure exact restoration.
-9. Catalog-publication failure restores pointer/DB/catalog/sessions.
+9. Catalog-publication failure restores pointer/DB/catalog and reactivates both exact runs.
 10. Later GC failure restores already staged version directories.
 11. Reactivation failure retains conflict recovery and blocks installation.
-12. Session-referenced active version survives GC.
-13. Session/chat associations remain exact through inspection cancellation.
-14. Cleanup failure persists `cleanup_pending` recovery.
-15. Startup reconciliation completes pending cleanup without activation.
-16. A second removal inspection waits behind the consent lease.
-17. Frozen schema-valid path-free progress events.
-18. Immutable stack-free/path-free terminal errors.
-19. Successful cleanup removes journal/staging exactly once.
+12. A distinct old version referenced by a real inactive session association survives GC, with the association unchanged.
+13. Distinct previous/candidate versions referenced by a durable update recovery journal both survive GC.
+14. Session/chat associations remain exact through inspection cancellation.
+15. Cleanup failure persists `cleanup_pending` recovery.
+16. Startup reconciliation completes pending cleanup without activation.
+17. Removal waits behind a held update PackageLock lease without acquiring or mutating, then completes without deadlock and preserves exact state on cancellation.
+18. Frozen schema-valid path-free progress events.
+19. Immutable stack-free/path-free terminal errors.
+20. Successful cleanup removes journal/staging exactly once.
 
 ## Verification
 
 - `npm run db:generate` — 27 tables; **No schema changes, nothing to migrate**, confirming checked-in `0012_big_shooting_star.sql`, `meta/0012_snapshot.json`, and `_journal.json` match the schema.
-- `npm test -- src/main/capabilities/capability-removal.test.ts` — **1 file / 19 tests passed**.
+- `npm test -- src/main/capabilities/capability-removal.test.ts` — **1 file / 20 tests passed**.
+- Task 9 regression selection (removal, update lifecycle/recovery/configuration/blocking, installer, discovery/metadata) — **7 files / 110 tests passed**.
 - Typecheck was not rerun during finalization: the only source-file scope adjustment was reverting unrelated `SessionMessages.tsx` to HEAD, while the Task 9B2 source had already been typechecked; the documented pre-existing renderer Props blocker therefore remains unchanged.
