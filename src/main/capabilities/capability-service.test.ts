@@ -68,6 +68,28 @@ describe("CapabilityService", () => {
       .run(now, now);
   });
   afterEach(() => sqlite.close());
+  it("keeps blocked managed packages visible but refuses activation before provider work", async () => {
+    const entry = { ...managedWebEntry, blocked: true };
+    const hosts = { setActiveCapabilities: vi.fn() };
+    const service = new CapabilityService({
+      repository: new CapabilityRepository(sqlite),
+      catalog: {
+        list: () => [entry],
+        get: () => entry,
+        refresh: async () => undefined,
+      },
+      credentials: {} as never,
+      hosts: hosts as never,
+      activator: {} as never,
+      getAgentKind: vi.fn().mockResolvedValue("codex"),
+    });
+    expect(service.listCapabilities()[0].installationState).toBe("blocked");
+    await expect(
+      service.activateCapability("run-1", entry.manifest.id),
+    ).rejects.toThrow("blocked");
+    expect(hosts.setActiveCapabilities).not.toHaveBeenCalled();
+  });
+
   it("configures keyless search and activates with ordered reload events", async () => {
     const repository = new CapabilityRepository(sqlite);
     const events: string[] = [];

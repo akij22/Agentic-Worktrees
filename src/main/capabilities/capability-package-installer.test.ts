@@ -58,6 +58,79 @@ async function createTargetAttempt(f: Fixture, operationId: string) {
 }
 afterEach(async () => { while (roots.length) await rm(roots.pop()!, { recursive: true, force: true }); });
 
+describe("CapabilityPackageInstaller update transactions", () => {
+  async function updateFixture() {
+    const f = await fixture();
+    const installer = new CapabilityPackageInstaller(f.layout, f.repo, f.capabilities, (work) => f.db.transaction(work)());
+    await installer.commitFresh(f.inspected, { capabilityId: f.capabilityId, version: f.version, contentDigest: f.contentDigest, toolNames: [] });
+    f.capabilities.saveConfiguration({ capabilityId: f.capabilityId, version: f.version, permissionDigest: "perm", configured: true }, [{ key: "token", secretRef: "opaque-old" }]);
+    const before = { record: f.repo.getByPackageName(f.packageName), configuration: f.capabilities.snapshotInstalledConfiguration(f.capabilityId), pointer: await readFile(`${f.layout.activePointerPath(f.capabilityId)}.json`) };
+    const next = await createTargetAttempt(f, "update-1");
+    const candidate = next.inspected as unknown as import("./package-inspector").InspectedCapabilityPackage;
+    candidate.staged.resolvedVersion = "2.0.0";
+    candidate.staged.requestedSpec = `${f.packageName}@2.0.0`;
+    candidate.descriptor.manifest.version = "2.0.0";
+    await writeFile(join(candidate.staged.packageRoot, "capability.json"), JSON.stringify(candidate.descriptor));
+    await writeFile(join(candidate.staged.packageRoot, "package.json"), JSON.stringify({ name: f.packageName, version: "2.0.0", agenticWorktrees: candidate.packageMetadata }));
+    candidate.staged.contentDigest = await digestPackageTree(candidate.staged.packageRoot);
+    f.db.prepare("UPDATE managed_package_operations SET action='update', requested_spec=? WHERE operation_id='update-1'").run(candidate.staged.requestedSpec);
+    return { ...f, installer, before, candidate, verification: { capabilityId: f.capabilityId, version: "2.0.0", contentDigest: candidate.staged.contentDigest, toolNames: [] }, configuration: { configured: true, settings: [{ key: "token", secretRef: "opaque-old" }], obsoleteSecretRefs: [] } };
+  }
+  it("preserves an external pointer change during candidate verification", async () => {
+    const f = await updateFixture();
+    const pointer = `${f.layout.activePointerPath(f.capabilityId)}.json`;
+    const external = Buffer.from('{"external":"owner"}');
+    const installer = new CapabilityPackageInstaller(f.layout, f.repo, f.capabilities, (work) => f.db.transaction(work)(), {
+      verifyCommittedPath: async () => { await writeFile(pointer, external); },
+    });
+    await expect(installer.commitUpdate(f.candidate, f.verification, f.configuration)).rejects.toThrow("package_update_failed");
+    expect(await readFile(pointer)).toEqual(external);
+    expect(f.repo.getByPackageName(f.packageName)).toEqual(f.before.record);
+    expect(f.capabilities.snapshotInstalledConfiguration(f.capabilityId)).toEqual(f.before.configuration);
+  });
+  it("preserves an external pointer change when catalog publication fails", async () => {
+    const f = await updateFixture();
+    const pointer = `${f.layout.activePointerPath(f.capabilityId)}.json`;
+    const external = Buffer.from('{"external":"owner"}');
+    const installer = new CapabilityPackageInstaller(f.layout, f.repo, f.capabilities, (work) => f.db.transaction(work)(), {
+      refreshCatalog: vi.fn().mockImplementationOnce(async () => { await writeFile(pointer, external); throw new Error("catalog failed"); }).mockResolvedValue(undefined),
+    });
+    await expect(installer.commitUpdate(f.candidate, f.verification, f.configuration)).rejects.toThrow("package_update_failed");
+    expect(await readFile(pointer)).toEqual(external);
+  });
+  it("swaps the pointer and configuration while retaining the old executable tree", async () => {
+    const f = await updateFixture();
+    const commit = await f.installer.commitUpdate(f.candidate, f.verification, f.configuration);
+    expect(commit.current.activeVersion).toBe("2.0.0");
+    expect(JSON.parse(await readFile(`${f.layout.activePointerPath(f.capabilityId)}.json`, "utf8")).version).toBe("2.0.0");
+    expect(f.capabilities.getSettings(f.capabilityId)).toEqual(f.configuration.settings);
+    await expect(access(f.layout.packageVersionRoot(f.capabilityId, f.version))).resolves.toBeUndefined();
+  });
+  it("restores exact pointer, managed row and encrypted configuration after host failure", async () => {
+    const f = await updateFixture(); const commit = await f.installer.commitUpdate(f.candidate, f.verification, f.configuration);
+    await f.installer.restoreUpdate(commit);
+    expect(f.repo.getByPackageName(f.packageName)).toEqual(f.before.record);
+    expect(f.capabilities.snapshotInstalledConfiguration(f.capabilityId)).toEqual(f.before.configuration);
+    expect(await readFile(`${f.layout.activePointerPath(f.capabilityId)}.json`)).toEqual(f.before.pointer);
+  });
+  it("restores all persistent state after catalog publication fails", async () => {
+    const f = await updateFixture(); const refresh = vi.fn().mockRejectedValueOnce(new Error("private catalog failure")).mockResolvedValue(undefined);
+    const installer = new CapabilityPackageInstaller(f.layout, f.repo, f.capabilities, (work) => f.db.transaction(work)(), { refreshCatalog: refresh });
+    await expect(installer.commitUpdate(f.candidate, f.verification, f.configuration)).rejects.toThrow("package_update_failed");
+    expect(f.repo.getByPackageName(f.packageName)).toEqual(f.before.record);
+    expect(f.capabilities.snapshotInstalledConfiguration(f.capabilityId)).toEqual(f.before.configuration);
+    expect(await readFile(`${f.layout.activePointerPath(f.capabilityId)}.json`)).toEqual(f.before.pointer);
+    expect(refresh).toHaveBeenCalledTimes(2);
+  });
+  it("refuses stale rollback after external configuration changes", async () => {
+    const f = await updateFixture(); const commit = await f.installer.commitUpdate(f.candidate, f.verification, f.configuration);
+    f.capabilities.replaceSettings(f.capabilityId, [{ key: "external", value: true }]);
+    await expect(f.installer.restoreUpdate(commit)).rejects.toThrow("package_update_failed");
+    expect(f.capabilities.getSettings(f.capabilityId)).toEqual([{ key: "external", value: true }]);
+    expect(f.repo.getByPackageName(f.packageName)?.activeVersion).toBe("2.0.0");
+  });
+});
+
 describe("CapabilityPackageInstaller real fixtures", () => {
   it("moves a successful staged package to the exact version directory", async () => { const f = await fixture(); await new CapabilityPackageInstaller(f.layout, f.repo, f.capabilities, (work) => f.db.transaction(work)()).commitFresh(f.inspected, { capabilityId: f.capabilityId, version: f.version, contentDigest: f.contentDigest, toolNames: [] }); await expect(readFile(join(f.layout.packageVersionRoot(f.capabilityId, f.version), "dist/index.js"), "utf8")).resolves.toBe("module.exports = {};"); await expect(access(f.staged.packageRoot)).rejects.toMatchObject({ code: "ENOENT" }); });
   it("writes an atomic active pointer with exact identity and relative paths", async () => { const f = await fixture(); await new CapabilityPackageInstaller(f.layout, f.repo, f.capabilities, (work) => f.db.transaction(work)()).commitFresh(f.inspected, { capabilityId: f.capabilityId, version: f.version, contentDigest: f.contentDigest, toolNames: [] }); const p = JSON.parse(await readFile(`${f.layout.activePointerPath(f.capabilityId)}.json`, "utf8")); expect(p).toEqual({ packageName: f.packageName, capabilityId: f.capabilityId, version: f.version, integrity: f.integrity, contentDigest: f.contentDigest, manifestPath: "./capability.json", entryPath: "./dist/index.js" }); });
@@ -142,7 +215,7 @@ describe("CapabilityPackageInstaller real fixtures", () => {
     it(`restores exact prior target state after deterministic pointer ${failure} failure`, async () => {
       const f = await fixture(); const unrelated = await installUnrelated(f); const unrelatedBaseline = await snapshotInstalledFixture(unrelated);
       await new CapabilityPackageInstaller(f.layout, f.repo, f.capabilities, (work) => f.db.transaction(work)()).commitFresh(f.inspected, { capabilityId: f.capabilityId, version: f.version, contentDigest: f.contentDigest, toolNames: [] });
-      const pointer = `${f.layout.activePointerPath(f.capabilityId)}.json`; const distinctivePointer = Buffer.from(`{\"prior\":\"${failure}-pointer-bytes\"}\n`); await writeFile(pointer, distinctivePointer);
+      const pointer = `${f.layout.activePointerPath(f.capabilityId)}.json`; const distinctivePointer = Buffer.from(`{"prior":"${failure}-pointer-bytes"}\n`); await writeFile(pointer, distinctivePointer);
       const targetBaseline = { managed: f.repo.getByPackageName(f.packageName), configuration: f.capabilities.snapshotInstalledConfiguration(f.capabilityId), tree: await snapshotTree(f.layout.packageVersionRoot(f.capabilityId, f.version)) };
       const attempt = await createTargetAttempt(f, `op-retry-${failure}`); const temp = `${pointer}.${process.pid}.tmp`; const native = await import("node:fs/promises");
       const fs: InstallerFileSystem = { mkdir: native.mkdir, readFile: (path) => native.readFile(path), stat: native.stat, writeFile: native.writeFile, rm: native.rm,

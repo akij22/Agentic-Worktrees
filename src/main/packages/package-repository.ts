@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { updateRecoverySchema, type UpdateRecovery } from "../../shared/packages/update-recovery";
 import { getSqlite } from "../database/client";
 import type {
 	ManagedPackageInstallationRecord,
@@ -74,6 +75,60 @@ function operationFromRow(row: OperationRow): PackageOperationRecord {
 
 export class ManagedPackageRepository {
 	constructor(private readonly sqlite: Database.Database = getSqlite()) {}
+  createUpdateRecovery(input: UpdateRecovery): void {
+    try {
+      const snapshot = updateRecoverySchema.parse(input);
+      this.sqlite.transaction(() => {
+        if (this.listUpdateRecoveries().some((row) => row.packageName === snapshot.packageName && !["conflict", "cleanup_pending"].includes(row.stage)))
+          throw new Error("package_update_failed");
+        this.sqlite.prepare("INSERT INTO managed_package_update_recoveries (operation_id, owner_token, package_name, snapshot) VALUES (?, ?, ?, ?)")
+          .run(snapshot.operationId, snapshot.ownerToken, snapshot.packageName, JSON.stringify(snapshot));
+      })();
+    } catch { throw new Error("package_update_failed"); }
+  }
+  listUpdateRecoveries(): UpdateRecovery[] {
+    try {
+      return (this.sqlite.prepare("SELECT snapshot FROM managed_package_update_recoveries ORDER BY operation_id").all() as { snapshot: string }[])
+        .map((row) => updateRecoverySchema.parse(JSON.parse(row.snapshot)));
+    } catch { throw new Error("package_update_failed"); }
+  }
+  advanceUpdateRecovery(operationId: string, ownerToken: string, stage: UpdateRecovery["stage"], errorCode?: PackageErrorCode): void {
+    this.sqlite.transaction(() => {
+      const current = this.listUpdateRecoveries().find((row) => row.operationId === operationId && row.ownerToken === ownerToken);
+      if (!current) throw new Error("package_update_failed");
+      const next = updateRecoverySchema.parse({ ...current, stage, ...(errorCode ? { errorCode } : {}) });
+      this.sqlite.prepare("UPDATE managed_package_update_recoveries SET snapshot=? WHERE operation_id=? AND owner_token=?")
+        .run(JSON.stringify(next), operationId, ownerToken);
+    })();
+  }
+  finishUpdateRecovery(operationId: string, ownerToken: string): void {
+    this.sqlite.transaction(() => {
+      if (this.sqlite.prepare("DELETE FROM managed_package_update_recoveries WHERE operation_id=? AND owner_token=?").run(operationId, ownerToken).changes !== 1)
+        throw new Error("package_update_failed");
+    })();
+  }
+  completeRecoveredCleanup(operationId: string, ownerToken: string): void {
+    this.sqlite.transaction(() => {
+      const recovery = this.listUpdateRecoveries().find((row) => row.operationId === operationId && row.ownerToken === ownerToken && row.stage === "cleanup_pending");
+      if (!recovery) throw new Error("package_update_failed");
+      this.finishUpdateRecovery(operationId, ownerToken);
+      if (!this.listUpdateRecoveries().some((row) => row.packageName === recovery.packageName)) {
+        this.sqlite.prepare("UPDATE managed_package_installations SET state='installed', error_code=NULL WHERE package_name=? AND item_id=? AND active_version=? AND active_integrity=? AND active_content_digest=? AND state='blocked' AND error_code='package_update_failed'")
+          .run(recovery.packageName, recovery.capabilityId, recovery.candidatePointer.version, recovery.candidatePointer.integrity, recovery.candidatePointer.contentDigest);
+      }
+    })();
+  }
+  quarantineUpdateRecoveries(): void {
+    this.sqlite.transaction(() => {
+      for (const row of this.listUpdateRecoveries()) {
+        this.sqlite.prepare("UPDATE managed_package_installations SET state='blocked', error_code='package_update_failed' WHERE package_name=? AND item_id=?")
+          .run(row.packageName, row.capabilityId);
+        this.sqlite.prepare("UPDATE managed_package_operations SET status='failed', error_code='package_update_failed', updated_at=? WHERE operation_id=?")
+          .run(Date.now(), row.operationId);
+        if (row.stage !== "cleanup_pending") this.advanceUpdateRecovery(row.operationId, row.ownerToken, "conflict", "package_update_failed");
+      }
+    })();
+  }
 	getByPackageName(packageName: string): ManagedPackageInstallationRecord | undefined {
 		const row = this.sqlite.prepare(`${installationSelect} WHERE package_name = ?`).get(packageName) as InstallationRow | undefined;
 		return row ? installationFromRow(row) : undefined;
@@ -162,7 +217,7 @@ export class ManagedPackageRepository {
 	 * unrelated operation after an identity collision.
 	 */
 	compensateFailedInstall(operationSnapshot: PackageOperationRecord, expected: { operationId: string; packageName: string; requestedSpec: string }, code: PackageErrorCode): PackageOperationRecord {
-		if (operationSnapshot.operationId !== expected.operationId || operationSnapshot.packageName !== expected.packageName || operationSnapshot.requestedSpec !== expected.requestedSpec || operationSnapshot.action !== "install") {
+		if (operationSnapshot.operationId !== expected.operationId || operationSnapshot.packageName !== expected.packageName || operationSnapshot.requestedSpec !== expected.requestedSpec || !["install", "update"].includes(operationSnapshot.action)) {
 			throw new Error("Managed package operation identity mismatch.");
 		}
 		const current = this.snapshotOperation(expected.operationId);

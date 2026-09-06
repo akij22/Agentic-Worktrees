@@ -32,6 +32,7 @@ export interface CapabilityCatalogEntry {
   readonly trust: "built-in" | "official" | "community";
   readonly source: "bundled" | "npm";
   readonly packageName?: string;
+  readonly blocked?: boolean;
   readonly toolNames: readonly string[];
   readonly runtime: CapabilityRuntimeDescriptor;
 }
@@ -91,6 +92,7 @@ export function createCapabilityCatalog(
           trust: item.record.trust,
           source: "npm" as const,
           packageName: item.record.packageName,
+          blocked: item.record.state === "blocked",
           toolNames: item.descriptor.tools.map((tool) => tool.name),
           runtime: {
             kind: "managed" as const,
@@ -170,9 +172,13 @@ export function toCapabilitySummaryDto(
     description: manifest.description,
     category: manifest.category,
     compatibility: manifest.compatibility,
-    state,
+    state: capability.blocked ? "unavailable" : state,
     secretConfigured,
-    installationState: state === "needs_setup" ? "needs_setup" : "installed",
+    installationState: capability.blocked
+      ? "blocked"
+      : state === "needs_setup"
+        ? "needs_setup"
+        : "installed",
     source: capability.source,
     ...(capability.packageName ? { packageName: capability.packageName } : {}),
     trust: capability.trust,

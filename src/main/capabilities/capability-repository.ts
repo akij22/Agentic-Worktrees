@@ -376,6 +376,11 @@ export class CapabilityRepository {
       .map((record) => record.runId);
   }
 
+  isPackageActivationBlocked(capabilityId: string): boolean {
+    return Boolean(this.sqlite.prepare(`SELECT 1 FROM managed_package_installations WHERE item_kind='capability' AND item_id=? AND state IN ('blocked','invalid')
+      UNION ALL SELECT 1 FROM managed_package_update_recoveries WHERE json_extract(snapshot, '$.capabilityId')=? LIMIT 1`).get(capabilityId, capabilityId));
+  }
+
   snapshotSessionCapabilities(capabilityId: string): SessionCapabilitySnapshot {
     return Object.freeze({
       capabilityId,

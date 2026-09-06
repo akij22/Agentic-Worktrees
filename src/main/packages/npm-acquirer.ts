@@ -8,7 +8,7 @@ import { parseNpmSourceSpec } from "./npm-source";
 import type { ManagedPackageLayout } from "./storage-layout";
 
 const MAX_BYTES = 50 * 1024 * 1024;
-export interface ResolvedNpmSource { requestedSpec: string; packageName: string; resolvedVersion: string; integrity: string; unpackedSize?: number }
+export interface ResolvedNpmSource { requestedSpec: string; packageName: string; resolvedVersion: string; integrity: string; unpackedSize?: number; releaseNotes?: string }
 export interface StagedNpmPackage extends ResolvedNpmSource { operationId: string; packageRoot: string; packageJson: unknown; contentDigest: string }
 export interface NpmRegistryAdapter { resolve(spec: string, signal: AbortSignal): Promise<ResolvedNpmSource>; extract(source: ResolvedNpmSource, destination: string, signal: AbortSignal): Promise<void> }
 
@@ -17,7 +17,9 @@ export class PacoteNpmRegistryAdapter implements NpmRegistryAdapter {
 	async resolve(spec: string, signal: AbortSignal): Promise<ResolvedNpmSource> {
 		const parsed = parseNpmSourceSpec(spec); const manifest = await pacote.manifest(parsed.requestedSpec, { cache: this.cacheRoot, signal });
 		if (!manifest.name || !semver.valid(manifest.version) || !manifest._integrity) throw new Error("npm registry returned incomplete package metadata");
-		return { ...parsed, packageName: manifest.name, resolvedVersion: manifest.version, integrity: String(manifest._integrity), unpackedSize: manifest.dist?.unpackedSize };
+		const notes = (manifest as unknown as Record<string, unknown>).releaseNotes;
+		return { ...parsed, packageName: manifest.name, resolvedVersion: manifest.version, integrity: String(manifest._integrity), unpackedSize: manifest.dist?.unpackedSize,
+      ...(typeof notes === "string" && notes.length <= 32_768 ? { releaseNotes: notes } : {}) };
 	}
 	async extract(source: ResolvedNpmSource, destination: string, signal: AbortSignal): Promise<void> {
 		await pacote.extract(`${source.packageName}@${source.resolvedVersion}`, destination, { cache: this.cacheRoot, signal, integrity: source.integrity });

@@ -284,6 +284,13 @@ export const managedPackageOperations = sqliteTable(
 	}),
 );
 
+export const managedPackageUpdateRecoveries = sqliteTable("managed_package_update_recoveries", {
+  operationId: text("operation_id").primaryKey(),
+  ownerToken: text("owner_token").notNull(),
+  packageName: text("package_name").notNull(),
+  snapshot: text("snapshot").notNull(),
+});
+
 export const capabilityInstallations = sqliteTable("capability_installations", {
 	capabilityId: text("capability_id").primaryKey(),
 	version: text("version").notNull(),

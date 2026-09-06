@@ -259,6 +259,11 @@ export class CapabilityService implements CapabilitySessionPackageCoordinator {
       return record;
     };
     const capability = this.getCatalog(capabilityId);
+    if (capability.blocked || (!coordination && this.dependencies.repository.isPackageActivationBlocked(capabilityId)))
+      throw new CapabilityError(
+        "permission_denied",
+        "Capability package is blocked.",
+      );
     const installation =
       this.dependencies.repository.getInstallation(capabilityId);
     if (
@@ -506,14 +511,34 @@ export class CapabilityService implements CapabilitySessionPackageCoordinator {
       );
   }
 
+  finalizeDeactivation(capabilityId: string): void {
+    const prior = this.packageSessionSnapshots.get(capabilityId);
+    if (
+      !prior ||
+      this.packageSessionOperations.has(capabilityId) ||
+      !this.sessionStateMatchesDeactivation(capabilityId, prior.snapshot)
+    )
+      throw this.rollbackConflict();
+    this.packageSessionSnapshots.delete(capabilityId);
+  }
+
   async reloadRuns(capabilityId: string, version: string): Promise<void> {
     this.assertManagedCapability(capabilityId);
     this.getCatalog(capabilityId, version);
+    if (this.packageSessionOperations.has(capabilityId)) throw this.rollbackConflict();
+    this.packageSessionOperations.add(capabilityId);
     const runIds = [...this.listActiveRuns(capabilityId)];
-    await this.assertRunsIdle(runIds);
+    const expected = this.dependencies.repository.snapshotSessionCapabilities(capabilityId);
+    const assertCurrent = () => {
+      if (!this.dependencies.repository.sessionCapabilitiesMatch(capabilityId, expected.records)) throw this.rollbackConflict();
+    };
     const reloaded: string[] = [];
     try {
+      await this.assertRunsIdle(runIds);
+      assertCurrent();
       for (const runId of runIds) {
+        await this.assertRunsIdle([runId]);
+        assertCurrent();
         const activeIds = this.dependencies.repository
           .listSessionCapabilities(runId)
           .filter((record) => record.status === "active")
@@ -523,17 +548,24 @@ export class CapabilityService implements CapabilitySessionPackageCoordinator {
           activeIds,
           this.hostSettings(activeIds),
         );
+        assertCurrent();
         await this.dependencies.activator.apply(runId, tools);
+        assertCurrent();
         reloaded.push(runId);
       }
-      this.dependencies.repository.updateSessionCapabilityVersions(
-        capabilityId,
-        runIds,
-        version,
-      );
+      if (
+        !this.dependencies.repository.updateSessionCapabilityVersionsIfMatches(
+          capabilityId,
+          expected.records,
+          runIds,
+          version,
+        )
+      )
+        throw this.rollbackConflict();
     } catch {
       for (const runId of reloaded.reverse()) {
         try {
+          assertCurrent();
           const activeIds = this.dependencies.repository
             .listSessionCapabilities(runId)
             .filter((record) => record.status === "active")
@@ -555,6 +587,8 @@ export class CapabilityService implements CapabilitySessionPackageCoordinator {
         "agent_reload_failed",
         "Capability sessions could not be reloaded.",
       );
+    } finally {
+      this.packageSessionOperations.delete(capabilityId);
     }
   }
 

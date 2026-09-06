@@ -11,6 +11,7 @@ import { ManagedPackageRepository } from "../packages/package-repository";
 import { digestPackageTree } from "../packages/content-digest";
 import { readContainedJson } from "../packages/bounded-file-reader";
 import { permissionDigest } from "./catalog";
+import { OfficialCatalogService } from "../packages/catalog/official-catalog";
 
 export interface InstalledCapabilityEntry {
   record: ManagedPackageInstallationRecord;
@@ -20,6 +21,7 @@ export interface InstalledCapabilityEntry {
   entryRelativePath: string;
 }
 export interface InstalledCatalogTestHooks {
+  officialCatalog?: Pick<OfficialCatalogService, "findCapability">;
   afterFirstDigest?: (
     record: ManagedPackageInstallationRecord,
   ) => Promise<void>;
@@ -122,11 +124,19 @@ function pointer(value: unknown): Pointer {
 export class InstalledCapabilityCatalog {
   private snapshot: readonly InstalledCapabilityEntry[] = Object.freeze([]);
   private refreshQueue: Promise<void> = Promise.resolve();
+  private readonly officialCatalog: Pick<
+    OfficialCatalogService,
+    "findCapability"
+  >;
   constructor(
     private readonly layout: ManagedPackageLayout,
     private readonly repository = new ManagedPackageRepository(),
     private readonly hooks: InstalledCatalogTestHooks = {},
-  ) {}
+  ) {
+    this.officialCatalog =
+      hooks.officialCatalog ??
+      new OfficialCatalogService({ storageRoot: layout.root });
+  }
   list(): readonly InstalledCapabilityEntry[] {
     return this.snapshot;
   }
@@ -150,12 +160,21 @@ export class InstalledCapabilityCatalog {
     try {
       for (const record of this.repository.list("capability")) {
         if (
-          record.state !== "installed" ||
+          (record.state !== "installed" && record.state !== "blocked") ||
           !record.activeVersion ||
           !record.activeIntegrity ||
           !record.activeContentDigest
         )
           continue;
+        let blocked = record.state === "blocked";
+        if (record.trust === "official") {
+          const policy = await this.officialCatalog.findCapability(
+            record.itemId,
+          );
+          if (!policy || policy.packageName !== record.packageName)
+            throw new Error(FAIL);
+          blocked ||= policy.blockedVersions.includes(record.activeVersion);
+        }
         const pointerPath = `${this.layout.activePointerPath(record.itemId)}.json`;
         const activePointer = pointer(
           await readContainedJson(
@@ -230,7 +249,10 @@ export class InstalledCapabilityCatalog {
           throw new Error(FAIL);
         next.push(
           deepFreeze({
-            record: deepFreeze({ ...record }),
+            record: deepFreeze({
+              ...record,
+              ...(blocked ? { state: "blocked" as const } : {}),
+            }),
             descriptor: deepFreeze(descriptor),
             packageRoot,
             manifestRelativePath: activePointer.manifestPath,

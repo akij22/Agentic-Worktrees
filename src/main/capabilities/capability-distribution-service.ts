@@ -1,5 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { gt, valid } from "semver";
+import { gt, lt, valid } from "semver";
+import npa from "npm-package-arg";
+import { InstalledCapabilityCatalog } from "./installed-catalog";
+import {
+  planCapabilityUpdateConfiguration,
+  type CapabilityUpdateConfiguration,
+} from "./capability-update-configuration";
+import type { CapabilitySessionPackageCoordinator } from "./capability-session-package-coordinator";
+import type { CapabilityCredentialStore } from "./capability-credential-store";
 import { NpmPackageMetadata } from "../packages/npm-metadata";
 import {
   capabilityDetailSchema,
@@ -15,6 +23,8 @@ import {
   packageErrorCodeSchema,
   packageInspectRequestSchema,
   packageInstallRequestSchema,
+  packageUpdateRequestSchema,
+  type PackageUpdateRequest,
   type CapabilityPackageInspectionDto,
   type CapabilityDistributionProgress,
   type PackageErrorCode,
@@ -51,6 +61,14 @@ const freeze = <T>(value: T): Readonly<T> => {
   return value;
 };
 
+const updateFailure = (cause: unknown, fallback: PackageErrorCode = "package_update_failed") => {
+  const parsed = packageErrorCodeSchema.safeParse(cause instanceof Error ? cause.message : undefined);
+  const code = parsed.success ? parsed.data : fallback;
+  const error = Object.assign(new Error(code), { code });
+  error.stack = undefined;
+  return Object.freeze(error);
+};
+
 const detail = (
   inspected: InspectedCapabilityPackage,
   configured: boolean,
@@ -78,6 +96,7 @@ const detail = (
 };
 
 export class CapabilityDistributionService {
+  private readonly actions = new Map<string, "install" | "update">();
   private readonly listeners = new Set<
     (event: CapabilityDistributionProgress) => void
   >();
@@ -88,11 +107,18 @@ export class CapabilityDistributionService {
   private readonly acquirer: NpmPackageAcquirer;
   private readonly inspector: CapabilityPackageInspector;
   private readonly installer: CapabilityPackageInstaller;
+  private readonly installedCatalog: Pick<
+    InstalledCapabilityCatalog,
+    "get" | "refresh"
+  >;
   constructor(
     private readonly deps: {
       layout: ManagedPackageLayout;
       acquirer?: NpmPackageAcquirer;
       metadata?: Pick<NpmPackageMetadata, "resolve">;
+      installedCatalog?: Pick<InstalledCapabilityCatalog, "get" | "refresh">;
+      sessionCoordinator?: CapabilitySessionPackageCoordinator;
+      credentials?: Pick<CapabilityCredentialStore, "removeSecret">;
       inspector?: CapabilityPackageInspector;
       verifier: CapabilityPackageVerifier;
       installer?: CapabilityPackageInstaller;
@@ -111,6 +137,9 @@ export class CapabilityDistributionService {
       deps.packageLock ?? new PackageLock(deps.layout.root + "/.packages.lock");
     this.acquirer = deps.acquirer ?? new NpmPackageAcquirer(deps.layout);
     this.inspector = deps.inspector ?? new CapabilityPackageInspector();
+    this.installedCatalog =
+      deps.installedCatalog ??
+      new InstalledCapabilityCatalog(deps.layout, this.repository);
     this.installer =
       deps.installer ??
       new CapabilityPackageInstaller(
@@ -118,6 +147,7 @@ export class CapabilityDistributionService {
         this.repository,
         this.capabilityRepository,
         <T>(work: () => T) => getSqlite().transaction(work)(),
+        { refreshCatalog: () => this.installedCatalog.refresh() },
       );
     this.registry = new ConsentLeaseRegistry({
       lock: this.lock,
@@ -142,7 +172,7 @@ export class CapabilityDistributionService {
     const event = Object.freeze(
       capabilityDistributionProgressSchema.parse({
         operationId,
-        action: "install",
+        action: this.actions.get(operationId) ?? "install",
         stage,
         status,
         updatedAt: new Date().toISOString(),
@@ -252,10 +282,21 @@ export class CapabilityDistributionService {
   async inspect(
     input: PackageInspectRequest,
   ): Promise<CapabilityPackageInspectionDto> {
-    const request = packageInspectRequestSchema.parse(input);
+    const parsed = packageInspectRequestSchema.safeParse(input);
+    if (!parsed.success) throw input?.intent === "update" ? updateFailure(undefined, "package_source_invalid") : new Error("package_source_invalid");
+    const request = parsed.data;
     const id = randomUUID();
+    this.actions.set(id, request.intent);
     const controller = new AbortController();
     let inspectedForAccept: InspectedCapabilityPackage | undefined;
+    let updateConfiguration: CapabilityUpdateConfiguration | undefined;
+    let priorInstallation: ReturnType<
+      ManagedPackageRepository["getByPackageName"]
+    >;
+    let priorConfiguration: ReturnType<
+      CapabilityRepository["snapshotInstalledConfiguration"]
+    >;
+    let updateMetadata: CapabilityUpdateDto | undefined;
     let operationCreated = false;
     const coded = (error: unknown, fallback: PackageErrorCode): Error => {
       const candidate = error instanceof Error ? error.message : undefined;
@@ -265,14 +306,14 @@ export class CapabilityDistributionService {
     const lease = this.registry.start<
       StagedNpmPackage,
       CapabilityPackageInspectionDto,
-      PackageInstallRequest,
+      PackageInstallRequest | PackageUpdateRequest,
       CapabilityDetailDto
     >({
       operationId: id,
       acquire: async () => {
         this.repository.beginOperation({
           operationId: id,
-          action: "install",
+          action: request.intent,
           stage: "resolving",
           requestedSpec: request.sourceSpec,
         });
@@ -289,13 +330,26 @@ export class CapabilityDistributionService {
         }
       },
       inspect: async (staged, timing) => {
-        const official = request.officialCapabilityId
+        priorInstallation = this.repository.getByPackageName(
+          staged.packageName,
+        );
+        const officialId =
+          request.intent === "update" && priorInstallation?.trust === "official"
+            ? priorInstallation.itemId
+            : request.officialCapabilityId;
+        const official = officialId
           ? await (
               this.deps.officialCatalog ?? new OfficialCatalogService()
-            ).findCapability(request.officialCapabilityId)
+            ).findCapability(officialId)
           : undefined;
-        if (request.officialCapabilityId && !official)
-          throw new Error("package_not_found");
+        if (officialId && !official) throw new Error("package_not_found");
+        if (
+          request.intent === "update" &&
+          official &&
+          (official.packageName !== staged.packageName ||
+            official.blockedVersions.includes(staged.resolvedVersion))
+        )
+          throw new Error("package_blocked");
         let inspected: InspectedCapabilityPackage;
         try {
           inspected = await this.inspector.inspect(
@@ -312,14 +366,60 @@ export class CapabilityDistributionService {
           throw coded(error, "package_manifest_invalid");
         }
         inspectedForAccept = inspected;
-        if (
-          this.repository.getByPackageName(staged.packageName) ||
-          this.repository.getByItemId(
-            "capability",
-            inspected.descriptor.manifest.id,
+        const collision = this.repository.getByItemId(
+          "capability",
+          inspected.descriptor.manifest.id,
+        );
+        if (request.intent === "install") {
+          if (priorInstallation || collision)
+            throw new Error("package_blocked");
+        } else {
+          if (
+            !priorInstallation ||
+            priorInstallation.itemKind !== "capability" ||
+            priorInstallation.itemId !== inspected.descriptor.manifest.id ||
+            collision?.packageName !== staged.packageName ||
+            !priorInstallation.activeVersion ||
+            priorInstallation.activeVersion === staged.resolvedVersion
           )
-        )
-          throw new Error("package_blocked");
+            throw new Error("package_update_failed");
+          const catalog = this.installedCatalog;
+          await catalog.refresh();
+          const old = catalog.get(
+            priorInstallation.itemId,
+            priorInstallation.activeVersion,
+          );
+          if (!old) throw new Error("package_update_failed");
+          priorConfiguration =
+            this.capabilityRepository.snapshotInstalledConfiguration(
+              priorInstallation.itemId,
+            );
+          updateConfiguration = planCapabilityUpdateConfiguration(
+            old.descriptor.manifest,
+            inspected.descriptor.manifest,
+            priorConfiguration.settings,
+          );
+          updateMetadata = capabilityUpdateSchema.parse({
+            packageName: staged.packageName,
+            capabilityId: priorInstallation.itemId,
+            currentVersion: priorInstallation.activeVersion,
+            candidateVersion: staged.resolvedVersion,
+            releaseNotes: official?.releaseNotes ?? staged.releaseNotes ?? "",
+            permissionChanged:
+              priorInstallation.acceptedPermissionDigest !==
+              inspected.permissionDigest,
+            requiresSetup: !updateConfiguration.configured,
+            downgrade: lt(
+              staged.resolvedVersion,
+              priorInstallation.activeVersion,
+            ),
+            requiresReview: false,
+            activeRunCount:
+              this.capabilityRepository.listActiveRunsByCapabilityId(
+                priorInstallation.itemId,
+              ).length,
+          });
+        }
         this.repository.markAwaitingConsent(id, {
           packageName: staged.packageName,
           version: staged.resolvedVersion,
@@ -335,16 +435,17 @@ export class CapabilityDistributionService {
           contentDigest: staged.contentDigest,
           trust: inspected.trust,
           reviewStatus: inspected.reviewStatus,
-          releaseNotes: official?.releaseNotes ?? "",
+          releaseNotes: official?.releaseNotes ?? staged.releaseNotes ?? "",
           capability: detail(inspected, false),
           permissionDigest: inspected.permissionDigest,
           expiresAt: new Date(timing.expiresAt).toISOString(),
+          ...(updateMetadata ? { update: updateMetadata } : {}),
         });
         this.emit(id, "verifying", "awaiting_consent", {
           packageName: staged.packageName,
           capabilityId: inspected.descriptor.manifest.id,
         });
-        return Object.freeze(dto);
+        return freeze(dto);
       },
       onCancel: () => controller.abort(new Error("package_cancelled")),
       accept: async (payload, staged, owner) => {
@@ -357,7 +458,33 @@ export class CapabilityDistributionService {
             inspectedForAccept.permissionDigest
         )
           throw new Error("package_permission_denied");
+        if ((request.intent === "update") !== "packageName" in payload)
+          throw new Error("package_permission_denied");
         const found = inspectedForAccept;
+        if (request.intent === "update") {
+          const accepted = packageUpdateRequestSchema.parse(payload);
+          if (
+            accepted.packageName !== staged.packageName ||
+            !priorInstallation ||
+            !updateMetadata ||
+            !updateConfiguration ||
+            JSON.stringify(
+              this.repository.getByPackageName(staged.packageName),
+            ) !== JSON.stringify(priorInstallation) ||
+            JSON.stringify(
+              this.capabilityRepository.snapshotInstalledConfiguration(
+                priorInstallation.itemId,
+              ),
+            ) !== JSON.stringify(priorConfiguration)
+          )
+            throw new Error("package_permission_denied");
+          if (
+            updateMetadata.downgrade &&
+            (!accepted.acceptedDowngrade ||
+              npa(staged.requestedSpec).type !== "version")
+          )
+            throw new Error("package_permission_denied");
+        }
         try {
           owner.assertHealthy();
         } catch {
@@ -391,6 +518,151 @@ export class CapabilityDistributionService {
         )
           throw new Error("package_verification_failed");
         owner.setPhase?.("committing");
+        if (request.intent === "update") {
+          const accepted = packageUpdateRequestSchema.parse(payload);
+          const coordinator = this.deps.sessionCoordinator;
+          if (
+            !coordinator ||
+            !priorInstallation?.activeVersion ||
+            !updateConfiguration
+          )
+            throw new Error("package_update_failed");
+          const capabilityId = found.descriptor.manifest.id;
+          if (
+            updateConfiguration.obsoleteSecretRefs.length &&
+            !this.deps.credentials
+          )
+            throw new Error("package_update_failed");
+          const sessionBefore =
+            this.capabilityRepository.snapshotSessionCapabilities(capabilityId);
+          const runIds = [...coordinator.listActiveRuns(capabilityId)];
+          if (runIds.length !== accepted.acceptedActiveRunCount)
+            throw new Error("package_permission_denied");
+          try {
+            await coordinator.assertRunsIdle(runIds);
+          } catch {
+            throw new Error("package_update_failed");
+          }
+          if (
+            JSON.stringify(
+              [...coordinator.listActiveRuns(capabilityId)].sort(),
+            ) !== JSON.stringify([...runIds].sort())
+          )
+            throw new Error("package_permission_denied");
+          owner.assertHealthy();
+          if (
+            JSON.stringify(
+              this.repository.getByPackageName(staged.packageName),
+            ) !== JSON.stringify(priorInstallation) ||
+            JSON.stringify(
+              this.capabilityRepository.snapshotInstalledConfiguration(
+                capabilityId,
+              ),
+            ) !== JSON.stringify(priorConfiguration)
+          )
+            throw new Error("package_update_failed");
+          let commit:
+            | Awaited<ReturnType<CapabilityPackageInstaller["commitUpdate"]>>
+            | undefined;
+          let deactivated = false;
+          const recovery = await this.installer.prepareUpdateRecovery(found, updateConfiguration);
+          try {
+            if (!updateConfiguration.configured && runIds.length) {
+              await coordinator.deactivateRuns(capabilityId);
+              deactivated = true;
+            }
+            const expectedSessions = this.capabilityRepository.snapshotSessionCapabilities(capabilityId);
+            commit = await this.installer.commitUpdate(
+              found,
+              verification,
+              updateConfiguration,
+              async () => {
+                await coordinator.assertRunsIdle(runIds);
+                owner.assertHealthy();
+                if (!this.capabilityRepository.sessionCapabilitiesMatch(capabilityId, expectedSessions.records) ||
+                    JSON.stringify(this.repository.getByPackageName(staged.packageName)) !== JSON.stringify(priorInstallation) ||
+                    JSON.stringify(this.capabilityRepository.snapshotInstalledConfiguration(capabilityId)) !== JSON.stringify(priorConfiguration))
+                  throw new Error("package_update_failed");
+              },
+            );
+            if (updateConfiguration.configured && runIds.length)
+              await coordinator.reloadRuns(
+                capabilityId,
+                staged.resolvedVersion,
+              );
+            owner.assertHealthy();
+            if (deactivated) coordinator.finalizeDeactivation(capabilityId);
+          } catch {
+            try {
+              if (
+                !deactivated &&
+                !this.capabilityRepository.sessionCapabilitiesMatch(
+                  capabilityId,
+                  sessionBefore.records,
+                )
+              )
+                throw new Error("package_update_failed");
+              if (commit) await this.installer.restoreUpdate(commit);
+              if (deactivated)
+                await coordinator.reactivateRuns(
+                  capabilityId,
+                  priorInstallation.activeVersion,
+                );
+              else if (commit && runIds.length)
+                await coordinator.restoreRuns(
+                  capabilityId,
+                  priorInstallation.activeVersion,
+                );
+              await this.installer.assertUpdateRecoveryRestored(recovery);
+              this.repository.finishUpdateRecovery(recovery.operationId, recovery.ownerToken);
+            } catch {
+              this.repository.advanceUpdateRecovery(recovery.operationId, recovery.ownerToken, "conflict", "package_update_failed");
+              this.repository.quarantineUpdateRecoveries();
+              await this.installedCatalog.refresh();
+              throw new Error("package_update_failed");
+            }
+            throw new Error("package_update_failed");
+          }
+          this.repository.advanceUpdateRecovery(recovery.operationId, recovery.ownerToken, "cleanup_pending");
+          for (const reference of updateConfiguration.obsoleteSecretRefs) {
+            try {
+              await this.deps.credentials?.removeSecret(reference);
+            } catch {
+              this.repository.advanceUpdateRecovery(recovery.operationId, recovery.ownerToken, "cleanup_pending", "package_update_failed");
+              this.repository.quarantineUpdateRecoveries();
+              await this.installedCatalog.refresh();
+              throw new Error("package_update_failed");
+            }
+          }
+          // A successful explicit update supersedes earlier quarantined attempts,
+          // but their encrypted references remain journaled until cleanup succeeds.
+          const retainedRefs = new Set(this.capabilityRepository.getSettings(capabilityId).flatMap((setting) => setting.secretRef ? [setting.secretRef] : []));
+          for (const older of this.repository.listUpdateRecoveries().filter((row) => row.packageName === staged.packageName && row.operationId !== recovery.operationId)) {
+            this.repository.advanceUpdateRecovery(older.operationId, older.ownerToken, "cleanup_pending");
+            try {
+              for (const reference of older.obsoleteSecretRefs) {
+                if (!retainedRefs.has(reference)) {
+                  if (!this.deps.credentials) throw new Error("package_update_failed");
+                  await this.deps.credentials.removeSecret(reference);
+                }
+              }
+              this.repository.finishUpdateRecovery(older.operationId, older.ownerToken);
+            } catch {
+              this.repository.quarantineUpdateRecoveries();
+              await this.installedCatalog.refresh();
+              throw new Error("package_update_failed");
+            }
+          }
+          if (commit) this.installer.finalizeUpdate(commit);
+          this.emit(id, "installing", "completed", {
+            packageName: staged.packageName,
+            capabilityId,
+          });
+          return freeze({
+            ...detail(found, updateConfiguration.configured),
+            activeRunCount: coordinator.listActiveRuns(capabilityId).length,
+          });
+        }
         let record;
         try {
           record = await this.installer.commitFresh(found, verification);
@@ -431,19 +703,53 @@ export class CapabilityDistributionService {
           },
         );
       },
-      cleanup: () =>
-        operationCreated ? this.acquirer.discard(id) : Promise.resolve(),
+      cleanup: async () => {
+        try {
+          if (operationCreated) await this.acquirer.discard(id);
+        } finally {
+          this.actions.delete(id);
+        }
+      },
     });
-    return lease.ready;
+    return request.intent === "update" ? lease.ready.catch((error: unknown) => { throw updateFailure(error); }) : lease.ready;
   }
   async install(input: PackageInstallRequest): Promise<CapabilityDetailDto> {
     const request = packageInstallRequestSchema.parse(input);
     return this.registry.accept(request.inspectionId, request);
   }
+  async update(input: PackageUpdateRequest): Promise<CapabilityDetailDto> {
+    const parsed = packageUpdateRequestSchema.safeParse(input);
+    if (!parsed.success) throw updateFailure(undefined, "package_permission_denied");
+    const request = parsed.data;
+    try { return await this.registry.accept(request.inspectionId, request); }
+    catch (error) { throw updateFailure(error); }
+  }
   async cancel(operationId: string) {
     return this.registry.cancel(operationId);
   }
   async reconcileInterruptedOperations() {
-    return;
+    return this.lock.runExclusive(async (owner) => {
+    owner.assertHealthy();
+    // Incomplete provider/filesystem compensation is never guessed at after restart.
+    // Keep the snapshots and both executable versions available for explicit recovery.
+    this.repository.quarantineUpdateRecoveries();
+    await this.installedCatalog.refresh();
+    const recoveries = this.repository.listUpdateRecoveries().sort((left, right) => {
+      const current = (row: typeof left) => this.repository.getByPackageName(row.packageName)?.activeVersion === row.candidatePointer.version ? 1 : 0;
+      return current(left) - current(right);
+    });
+    for (const recovery of recoveries) {
+      if (recovery.stage !== "cleanup_pending" || !this.deps.credentials) continue;
+      try {
+        const retained = new Set(this.capabilityRepository.getSettings(recovery.capabilityId).flatMap((setting) => setting.secretRef ? [setting.secretRef] : []));
+        for (const reference of recovery.obsoleteSecretRefs) if (!retained.has(reference)) await this.deps.credentials.removeSecret(reference);
+        this.repository.completeRecoveredCleanup(recovery.operationId, recovery.ownerToken);
+      } catch {
+        this.repository.advanceUpdateRecovery(recovery.operationId, recovery.ownerToken, "cleanup_pending", "package_update_failed");
+      }
+    }
+    await this.installedCatalog.refresh();
+    owner.assertHealthy();
+    });
   }
 }

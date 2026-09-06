@@ -56,8 +56,8 @@ export const packageOperationRecordSchema = z.object({
 });
 export type PackageOperationRecord = z.infer<typeof packageOperationRecordSchema>;
 
-export const packageInspectRequestSchema = z.object({ sourceSpec: packageSourceSpecSchema, officialCapabilityId: nonEmptyString.optional() });
-export type PackageInspectRequest = z.infer<typeof packageInspectRequestSchema>;
+export const packageInspectRequestSchema = z.object({ sourceSpec: packageSourceSpecSchema, officialCapabilityId: nonEmptyString.optional(), intent: z.enum(["install", "update"]).default("install") });
+export type PackageInspectRequest = z.input<typeof packageInspectRequestSchema>;
 export const packageInstallRequestSchema = z.object({
 	inspectionId: nonEmptyString, acceptedPackageName: packageNameSchema, acceptedVersion: nonEmptyString,
 	acceptedIntegrity: nonEmptyString, acceptedPermissionDigest: nonEmptyString,
@@ -98,5 +98,6 @@ export const capabilityPackageInspectionSchema = z.object({
 	capability: capabilityDetailSchema,
 	permissionDigest: nonEmptyString,
 	expiresAt: z.string().datetime(),
+	update: capabilityUpdateSchema.optional(),
 });
 export type CapabilityPackageInspectionDto = z.infer<typeof capabilityPackageInspectionSchema>;
