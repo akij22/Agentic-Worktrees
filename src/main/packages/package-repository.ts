@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { removalRecoverySchema, type RemovalRecovery } from "../../shared/packages/removal-recovery";
 import { updateRecoverySchema, type UpdateRecovery } from "../../shared/packages/update-recovery";
 import { getSqlite } from "../database/client";
 import type {
@@ -75,6 +76,48 @@ function operationFromRow(row: OperationRow): PackageOperationRecord {
 
 export class ManagedPackageRepository {
 	constructor(private readonly sqlite: Database.Database = getSqlite()) {}
+  createRemovalRecovery(input: RemovalRecovery): void {
+    try {
+      const row = removalRecoverySchema.parse(input);
+      this.sqlite.transaction(() => {
+        if (this.listRemovalRecoveries().some((prior) => prior.packageName === row.packageName)) throw new Error();
+        this.sqlite.prepare("INSERT INTO managed_package_removal_recoveries (operation_id,owner_token,package_name,snapshot) VALUES (?,?,?,?)").run(row.operationId, row.ownerToken, row.packageName, JSON.stringify(row));
+      })();
+    } catch { throw new Error("package_remove_failed"); }
+  }
+  listRemovalRecoveries(): RemovalRecovery[] {
+    try { return (this.sqlite.prepare("SELECT snapshot FROM managed_package_removal_recoveries ORDER BY operation_id").all() as { snapshot: string }[]).map((row) => removalRecoverySchema.parse(JSON.parse(row.snapshot))); }
+    catch { throw new Error("package_remove_failed"); }
+  }
+  advanceRemovalRecovery(operationId: string, ownerToken: string, stage: RemovalRecovery["stage"], errorCode?: PackageErrorCode): void {
+    this.sqlite.transaction(() => {
+      const prior = this.listRemovalRecoveries().find((row) => row.operationId === operationId && row.ownerToken === ownerToken);
+      if (!prior) throw new Error("package_remove_failed");
+      const row = removalRecoverySchema.parse({ ...prior, stage, ...(errorCode ? { errorCode } : {}) });
+      this.sqlite.prepare("UPDATE managed_package_removal_recoveries SET snapshot=? WHERE operation_id=? AND owner_token=?").run(JSON.stringify(row), operationId, ownerToken);
+    })();
+  }
+  finishRemovalRecovery(operationId: string, ownerToken: string): void {
+    this.sqlite.transaction(() => {
+      if (this.sqlite.prepare("DELETE FROM managed_package_removal_recoveries WHERE operation_id=? AND owner_token=?").run(operationId, ownerToken).changes !== 1) throw new Error("package_remove_failed");
+    })();
+  }
+  quarantineRemovalRecoveries(): void {
+    this.sqlite.transaction(() => {
+      for (const row of this.listRemovalRecoveries()) {
+        this.sqlite.prepare("UPDATE managed_package_installations SET state='blocked', error_code='package_remove_failed' WHERE package_name=? AND item_id=?").run(row.packageName, row.capabilityId);
+        this.sqlite.prepare("UPDATE managed_package_operations SET status='failed', error_code='package_remove_failed' WHERE operation_id=?").run(row.operationId);
+        if (row.stage !== "cleanup_pending") this.sqlite.prepare("UPDATE managed_package_removal_recoveries SET snapshot=? WHERE operation_id=? AND owner_token=?").run(JSON.stringify({ ...row, stage: "conflict", errorCode: "package_remove_failed" }), row.operationId, row.ownerToken);
+      }
+    })();
+  }
+  completeRemovalOperation(operationId: string): void {
+    this.sqlite.transaction(() => {
+      const operation = this.requireOperation(operationId);
+      if (operation.action !== "remove") throw new Error("package_remove_failed");
+      this.sqlite.prepare("UPDATE managed_package_operations SET status='completed', stage='removing', error_code=NULL, updated_at=? WHERE operation_id=?").run(Date.now(), operationId);
+    })();
+  }
   createUpdateRecovery(input: UpdateRecovery): void {
     try {
       const snapshot = updateRecoverySchema.parse(input);

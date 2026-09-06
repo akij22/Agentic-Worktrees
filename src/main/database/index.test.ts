@@ -54,6 +54,7 @@ describe("database upgrades", () => {
 		expect(tables.map(({ name }) => name)).toEqual([
 			"managed_package_installations",
 			"managed_package_operations",
+			"managed_package_removal_recoveries",
 			"managed_package_update_recoveries",
 		]);
 		const indexes = sqlite.prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'managed_package_%' ORDER BY name`).all() as Array<{ name: string }>;

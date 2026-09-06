@@ -42,3 +42,5 @@ export const updateRecoverySchema = z.object({
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Recovery identity mismatch" });
 });
 export type UpdateRecovery = z.infer<typeof updateRecoverySchema>;
+// Shared serializable snapshot primitives; update behavior remains unchanged.
+export { configuration as recoveryConfigurationSchema, session as recoverySessionSchema };

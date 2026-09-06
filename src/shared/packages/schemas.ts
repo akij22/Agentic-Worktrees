@@ -67,7 +67,15 @@ export const packageUpdateRequestSchema = packageInstallRequestSchema.extend({
 	packageName: packageNameSchema, acceptedDowngrade: z.boolean(), acceptedActiveRunCount: z.number().int().nonnegative(),
 });
 export type PackageUpdateRequest = z.infer<typeof packageUpdateRequestSchema>;
-export const packageRemoveRequestSchema = z.object({ packageName: packageNameSchema, acceptedActiveRunCount: z.number().int().nonnegative() });
+export const packageRemovalInspectRequestSchema = z.object({ packageName: packageNameSchema }).strict();
+export type PackageRemovalInspectRequest = z.infer<typeof packageRemovalInspectRequestSchema>;
+export const capabilityRemovalInspectionSchema = z.object({
+  inspectionId: nonEmptyString, packageName: packageNameSchema, capabilityId: nonEmptyString,
+  activeVersion: nonEmptyString, activeIntegrity: nonEmptyString, activeContentDigest: nonEmptyString,
+  activeRunCount: z.number().int().nonnegative(), expiresAt: z.string().datetime(),
+}).strict();
+export type CapabilityRemovalInspection = z.infer<typeof capabilityRemovalInspectionSchema>;
+export const packageRemoveRequestSchema = z.object({ inspectionId: nonEmptyString, packageName: packageNameSchema, acceptedActiveVersion: nonEmptyString, acceptedActiveRunCount: z.number().int().nonnegative() }).strict();
 export type PackageRemoveRequest = z.infer<typeof packageRemoveRequestSchema>;
 
 export const capabilityUpdateSchema = z.object({
@@ -81,7 +89,7 @@ export type CapabilityUpdateDto = z.infer<typeof capabilityUpdateSchema>;
 export const capabilityDistributionProgressSchema = z.object({
 	operationId: nonEmptyString, capabilityId: nonEmptyString.optional(), packageName: packageNameSchema.optional(),
 	action: packageOperationActionSchema, stage: packageOperationStageSchema, status: packageOperationStatusSchema,
-	errorCode: packageErrorCodeSchema.optional(), updatedAt: z.string().datetime(),
+	errorCode: packageErrorCodeSchema.optional(), updatedAt: z.string().datetime(), activeRunCount: z.number().int().nonnegative().optional(),
 });
 export type CapabilityDistributionProgress = z.infer<typeof capabilityDistributionProgressSchema>;
 

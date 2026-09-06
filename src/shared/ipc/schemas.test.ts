@@ -491,17 +491,20 @@ describe("package lifecycle IPC schemas", () => {
 			officialCapabilityId: "agentic-worktrees.web-search",
 			archivePath: "/must/not/cross/ipc",
 		})).toEqual({
+			intent: "install",
 			sourceSpec: "@agentic-worktrees/web-search@0.1.0",
 			officialCapabilityId: "agentic-worktrees.web-search",
 		});
 	});
 
 	it("rejects unknown removal request fields", () => {
-		expect(packageRemoveRequestSchema.parse({
+		expect(packageRemoveRequestSchema.safeParse({
+			inspectionId: "inspection-1",
 			packageName: "@agentic-worktrees/web-search",
+			acceptedActiveVersion: "0.1.0",
 			acceptedActiveRunCount: 2,
 			installDirectory: "/private/path",
-		})).not.toHaveProperty("installDirectory");
+		}).success).toBe(false);
 	});
 });
 

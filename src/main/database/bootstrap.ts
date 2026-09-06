@@ -1,4 +1,8 @@
 export const managedPackageSchemaStatements = [
+  `CREATE TABLE IF NOT EXISTS managed_package_removal_recoveries (
+    operation_id TEXT PRIMARY KEY NOT NULL, owner_token TEXT NOT NULL,
+    package_name TEXT NOT NULL, snapshot TEXT NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS managed_package_update_recoveries (
     operation_id TEXT PRIMARY KEY NOT NULL, owner_token TEXT NOT NULL,
     package_name TEXT NOT NULL, snapshot TEXT NOT NULL

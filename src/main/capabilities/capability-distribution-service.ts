@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { CapabilityRemovalInstaller } from "./capability-removal-installer";
+import { CapabilityRemovalService } from "./capability-removal-service";
+import type { PackageRemovalInspectRequest, PackageRemoveRequest, CapabilityRemovalInspection } from "../../shared/packages/schemas";
 import { gt, lt, valid } from "semver";
 import npa from "npm-package-arg";
 import { InstalledCapabilityCatalog } from "./installed-catalog";
@@ -96,6 +99,7 @@ const detail = (
 };
 
 export class CapabilityDistributionService {
+  private readonly removal: CapabilityRemovalService;
   private readonly actions = new Map<string, "install" | "update">();
   private readonly listeners = new Set<
     (event: CapabilityDistributionProgress) => void
@@ -122,6 +126,7 @@ export class CapabilityDistributionService {
       inspector?: CapabilityPackageInspector;
       verifier: CapabilityPackageVerifier;
       installer?: CapabilityPackageInstaller;
+      removalInstaller?: CapabilityRemovalInstaller;
       repository?: ManagedPackageRepository;
       capabilityRepository?: CapabilityRepository;
       officialCatalog?: OfficialCatalogService;
@@ -153,6 +158,12 @@ export class CapabilityDistributionService {
       lock: this.lock,
       clock: deps.clock ?? Date.now,
       scheduler: deps.scheduler ?? { setTimeout, clearTimeout },
+    });
+    this.removal = new CapabilityRemovalService({
+      repository: this.repository, capabilities: this.capabilityRepository, catalog: this.installedCatalog,
+      coordinator: deps.sessionCoordinator, credentials: deps.credentials, registry: this.registry,
+      installer: deps.removalInstaller ?? new CapabilityRemovalInstaller(deps.layout, this.repository, this.capabilityRepository, <T>(work: () => T) => getSqlite().transaction(work)(), { refreshCatalog: () => this.installedCatalog.refresh() }),
+      emit: (id, stage, status, extra) => this.emit(id, stage, status, extra),
     });
   }
   subscribe(
@@ -330,6 +341,7 @@ export class CapabilityDistributionService {
         }
       },
       inspect: async (staged, timing) => {
+        if (this.repository.listRemovalRecoveries().some((row) => row.packageName === staged.packageName)) throw new Error("package_busy");
         priorInstallation = this.repository.getByPackageName(
           staged.packageName,
         );
@@ -729,12 +741,15 @@ export class CapabilityDistributionService {
     try { return await this.registry.accept(request.inspectionId, request); }
     catch (error) { throw updateFailure(error); }
   }
+  inspectRemoval(input: PackageRemovalInspectRequest): Promise<CapabilityRemovalInspection> { return this.removal.inspect(input); }
+  remove(input: PackageRemoveRequest): Promise<void> { return this.removal.remove(input); }
   async cancel(operationId: string) {
     return this.registry.cancel(operationId);
   }
   async reconcileInterruptedOperations() {
     return this.lock.runExclusive(async (owner) => {
     owner.assertHealthy();
+    await this.removal.reconcile(owner);
     // Incomplete provider/filesystem compensation is never guessed at after restart.
     // Keep the snapshots and both executable versions available for explicit recovery.
     this.repository.quarantineUpdateRecoveries();
