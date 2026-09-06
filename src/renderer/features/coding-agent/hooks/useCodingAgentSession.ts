@@ -115,25 +115,12 @@ export const useCodingAgentSession = (runId: string) => {
     const capabilityApi = window.api.capabilities;
     void capabilityApi?.list({ runId }).then(setCapabilityLibrary).catch(() => setError("Could not load chat capabilities."));
     const unsubscribeCapabilities = capabilityApi?.onChanged((event) => {
+      if (event.scope === "catalog") {
+        void capabilityApi.list({ runId }).then(setCapabilityLibrary).catch(() => undefined);
+        return;
+      }
       if (event.runId !== runId) return;
-      setSnapshot((current) => {
-        if (!current) return current;
-        const nextCapability = {
-          id: event.capabilityId,
-          name: event.name,
-          version: event.version,
-          state: event.state,
-          ...(event.errorCode ? { errorCode: event.errorCode } : {}),
-          ...(event.activatedAt ? { activatedAt: event.activatedAt } : {}),
-          ...(event.deactivatedAt ? { deactivatedAt: event.deactivatedAt } : {}),
-        };
-        return {
-          ...current,
-          capabilities: [...current.capabilities.filter((item) => item.id !== event.capabilityId), nextCapability],
-          capabilityReloading: ["pending_activation", "pending_deactivation", "reloading"].includes(event.state),
-        };
-      });
-      if (["active", "inactive", "activation_failed"].includes(event.state)) void load();
+      void load();
       void capabilityApi.list({ runId }).then(setCapabilityLibrary).catch(() => undefined);
     }) ?? (() => undefined);
     const loadSkills=async()=>{const requestedRunId=runId;try{const skills=await window.api.skills.list();if(runIdRef.current===requestedRunId)setSkillLibrary(skills);}catch{if(runIdRef.current===requestedRunId)setError("Could not load installed skills.");}};

@@ -35,6 +35,16 @@ import type {
 	WorkspacePullRequestResultDto,
 	WorkspaceTerminalEventDto,
 	SkillChangedEventDto,
+	MarketplaceItemDto,
+	PackageInspectRequest,
+	PackageInstallRequest,
+	PackageUpdateRequest,
+	PackageRemoveRequest,
+	PackageRemovalInspectRequest,
+	CapabilityPackageInspectionDto,
+	CapabilityRemovalInspection,
+	CapabilityUpdateDto,
+	CapabilityDistributionProgress,
 } from "./schemas";
 import type { SkillDetailDto, SkillSummaryDto } from "../skills/schemas";
 
@@ -191,6 +201,18 @@ export interface Api {
 		install: () => Promise<SkillDetailDto | null>;
 		remove: (request: { skillId: string }) => Promise<void>;
 		onChanged: (listener: (event: SkillChangedEventDto) => void) => () => void;
+	};
+	marketplace: {
+		list: () => Promise<MarketplaceItemDto[]>;
+		inspect: (request: PackageInspectRequest) => Promise<CapabilityPackageInspectionDto>;
+		install: (request: PackageInstallRequest) => Promise<CapabilityDetailDto>;
+		checkUpdates: (request?: { packageName?: string }) => Promise<CapabilityUpdateDto[]>;
+		update: (request: PackageUpdateRequest) => Promise<CapabilityDetailDto>;
+		inspectRemoval: (request: PackageRemovalInspectRequest) => Promise<CapabilityRemovalInspection>;
+		remove: (request: PackageRemoveRequest) => Promise<void>;
+		cancel: (request: { operationId: string }) => Promise<void>;
+		retryPendingMigrations: () => Promise<void>;
+		onPackageChanged: (listener: (event: CapabilityDistributionProgress) => void) => () => void;
 	};
 	capabilities: {
 		list: (request?: { runId?: string }) => Promise<CapabilitySummaryDto[]>;

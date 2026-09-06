@@ -1,0 +1,3 @@
+import { describe, expect, it, vi } from "vitest";
+import { MarketplaceEventSubscription } from "./marketplace-event-subscription";
+describe("MarketplaceEventSubscription",()=>{it("subscribes once for duplicate startup and releases a replaced service",()=>{const firstOff=vi.fn(),secondOff=vi.fn(),first={subscribe:vi.fn(()=>firstOff)},second={subscribe:vi.fn(()=>secondOff)},owner=new MarketplaceEventSubscription(),listener=vi.fn();owner.configure(first as never,listener);owner.configure(first as never,listener);expect(first.subscribe).toHaveBeenCalledOnce();owner.configure(second as never,listener);expect(firstOff).toHaveBeenCalledOnce();expect(second.subscribe).toHaveBeenCalledOnce();owner.configure(null,listener);expect(secondOff).toHaveBeenCalledOnce();});});

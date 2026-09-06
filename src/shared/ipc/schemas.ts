@@ -13,6 +13,10 @@ import {
 	packageInstallRequestSchema,
 	packageUpdateRequestSchema,
 	packageRemoveRequestSchema,
+	packageRemovalInspectRequestSchema,
+	capabilityRemovalInspectionSchema,
+	capabilityPackageInspectionSchema,
+	packageNameSchema,
 	capabilityUpdateSchema,
 	capabilityDistributionProgressSchema,
 } from "../packages/schemas";
@@ -21,6 +25,9 @@ export {
 	packageInstallRequestSchema,
 	packageUpdateRequestSchema,
 	packageRemoveRequestSchema,
+	packageRemovalInspectRequestSchema,
+	capabilityRemovalInspectionSchema,
+	capabilityPackageInspectionSchema,
 	capabilityUpdateSchema,
 	capabilityDistributionProgressSchema,
 };
@@ -29,6 +36,9 @@ export type {
 	PackageInstallRequest,
 	PackageUpdateRequest,
 	PackageRemoveRequest,
+	PackageRemovalInspectRequest,
+	CapabilityRemovalInspection,
+	CapabilityPackageInspectionDto,
 	CapabilityUpdateDto,
 	CapabilityDistributionProgress,
 } from "../packages/schemas";
@@ -927,8 +937,16 @@ export const capabilityConfigureRequestSchema = z.object({
 });
 export const capabilityActivateRequestSchema = z.object({ runId: z.string().trim().min(1), capabilityId: capabilityIdSchema });
 export const capabilityDeactivateRequestSchema = capabilityActivateRequestSchema;
-export const capabilityChangedEventSchema = capabilitySessionStateSchema.extend({ updatedAt: z.string() });
+export const capabilityChangedEventSchema = z.discriminatedUnion("scope", [
+	z.object({ scope: z.literal("session"), runId: z.string().trim().min(1), capabilityId: capabilityIdSchema, state: capabilityStateSchema, updatedAt: z.string().datetime() }).strict(),
+	z.object({ scope: z.literal("catalog"), capabilityId: capabilityIdSchema, change: z.enum(["installed", "updated", "removed", "blocked"]), updatedAt: z.string().datetime() }).strict(),
+]);
 export type CapabilityChangedEventDto = z.infer<typeof capabilityChangedEventSchema>;
+
+export const marketplaceListRequestSchema = z.object({}).strict();
+export const marketplaceCheckUpdatesRequestSchema = z.object({ packageName: packageNameSchema.optional() });
+export const marketplaceCancelRequestSchema = z.object({ operationId: z.string().trim().min(1) }).strict();
+export const marketplaceRetryMigrationsRequestSchema = z.object({}).strict();
 export type CapabilityConfigureRequest = z.infer<typeof capabilityConfigureRequestSchema>;
 export type CapabilityActivateRequest = z.infer<typeof capabilityActivateRequestSchema>;
 export type CapabilityDeactivateRequest = z.infer<typeof capabilityDeactivateRequestSchema>;

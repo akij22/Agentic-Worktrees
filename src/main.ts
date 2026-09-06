@@ -4,6 +4,7 @@ import started from "electron-squirrel-startup";
 import { initDatabase } from "./main/database";
 import {
   configureCapabilityIpc,
+  configureMarketplaceIpc,
   configureSkillIpc,
   registerIpcHandlers,
 } from "./main/ipc";
@@ -39,6 +40,7 @@ import { getSqlite } from "./main/database/client";
 import { SkillRepository } from "./main/skills/skill-repository";
 import { SkillService } from "./main/skills/skill-service";
 import { createSkillStorageLayout } from "./main/skills/skill-installer";
+import { CapabilityDistributionService } from "./main/capabilities/capability-distribution-service";
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
@@ -94,6 +96,7 @@ const discoverCodingAgents = (): void => {
 };
 
 let capabilityService: CapabilityService | null = null;
+let capabilityDistributionService: CapabilityDistributionService | null = null;
 let skillService: SkillService | null = null;
 
 const initializeSkills = (): SkillService => {
@@ -321,6 +324,17 @@ const initializeCapabilities = async (): Promise<CapabilityService> => {
         .some((record) => interruptedStates.includes(record.status));
     },
   });
+  capabilityDistributionService = new CapabilityDistributionService({
+    layout: packageLayout,
+    repository: packageRepository,
+    capabilityRepository: repository,
+    installedCatalog,
+    sessionCoordinator: service,
+    credentials,
+    verifier: createElectronCapabilityPackageVerifier(),
+    packageLock,
+    webSearchMigration,
+  });
   configureCapabilityIpc(service);
   return service;
 };
@@ -331,6 +345,7 @@ void app
     initDatabase();
     capabilityService = await initializeCapabilities();
     skillService = initializeSkills();
+    configureMarketplaceIpc(capabilityDistributionService);
     registerIpcHandlers();
     const reconciliation = Promise.all([
       skillService

@@ -90,7 +90,7 @@ export const capabilityDistributionProgressSchema = z.object({
 	operationId: nonEmptyString, capabilityId: nonEmptyString.optional(), packageName: packageNameSchema.optional(),
 	action: packageOperationActionSchema, stage: packageOperationStageSchema, status: packageOperationStatusSchema,
 	errorCode: packageErrorCodeSchema.optional(), updatedAt: z.string().datetime(), activeRunCount: z.number().int().nonnegative().optional(),
-});
+}).strict();
 export type CapabilityDistributionProgress = z.infer<typeof capabilityDistributionProgressSchema>;
 
 export const capabilityPackageInspectionSchema = z.object({

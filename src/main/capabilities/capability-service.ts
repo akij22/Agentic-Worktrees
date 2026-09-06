@@ -933,8 +933,11 @@ export class CapabilityService implements CapabilitySessionPackageCoordinator {
     );
   }
   private emit(record: SessionCapabilityRecord): void {
-    const event = {
-      ...sessionDto(record, this.getCatalog(record.capabilityId)),
+    const event: CapabilityChangedEventDto = {
+      scope: "session",
+      runId: record.runId,
+      capabilityId: record.capabilityId,
+      state: sessionDto(record, this.getCatalog(record.capabilityId)).state,
       updatedAt: record.updatedAt.toISOString(),
     };
     for (const listener of this.listeners) listener(event);

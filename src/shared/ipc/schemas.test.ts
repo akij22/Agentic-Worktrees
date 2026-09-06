@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	capabilityActivateRequestSchema,
 	capabilityConfigureRequestSchema,
+	capabilityChangedEventSchema,
 	capabilityDetailSchema,
 	codingAgentAccountUsageSchema,
 	codingAgentKindSchema,
@@ -542,4 +543,10 @@ describe("skill IPC schemas",()=>{
  it("strictly rejects renderer install paths",()=>expect(()=>skillInstallRequestSchema.parse({path:"/secret"})).toThrow());
  it("accepts only a valid removal ID",()=>{expect(skillRemoveRequestSchema.parse({skillId:"security-review"})).toEqual({skillId:"security-review"});expect(()=>skillRemoveRequestSchema.parse({skillId:"BAD"})).toThrow();});
  it("keeps marketplace item discriminants",()=>expect(marketplaceItemSchema.parse({kind:"skill",skill:{id:"review",name:"review",description:"Review",version:"1",source:"local",compatibility:{codex:"supported",opencode:"supported"},installationState:"installed",automaticInvocation:true}}).kind).toBe("skill"));
+ it("validates strict session and catalog capability events",()=>{
+  expect(capabilityChangedEventSchema.parse({scope:"session",runId:"run-1",capabilityId:"agentic-worktrees.web-search",state:"active",updatedAt:"2026-09-02T00:00:00.000Z"}).scope).toBe("session");
+  expect(capabilityChangedEventSchema.parse({scope:"catalog",capabilityId:"agentic-worktrees.web-search",change:"updated",updatedAt:"2026-09-02T00:00:00.000Z"}).scope).toBe("catalog");
+  expect(()=>capabilityChangedEventSchema.parse({scope:"catalog",runId:"run-1",capabilityId:"agentic-worktrees.web-search",change:"updated",updatedAt:"2026-09-02T00:00:00.000Z"})).toThrow();
+  expect(()=>capabilityChangedEventSchema.parse({scope:"session",capabilityId:"agentic-worktrees.web-search",state:"active",updatedAt:"2026-09-02T00:00:00.000Z"})).toThrow();
+ });
 });

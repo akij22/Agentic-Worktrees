@@ -115,7 +115,9 @@ describe("CapabilityService", () => {
       },
       getAgentKind: vi.fn().mockResolvedValue("opencode"),
     });
-    service.subscribeToCapabilityEvents((event) => events.push(event.state));
+    service.subscribeToCapabilityEvents((event) => {
+      if (event.scope === "session") events.push(event.state);
+    });
     const id = "agentic-worktrees.web-search";
     const configured = await service.configureCapability({
       capabilityId: id,
