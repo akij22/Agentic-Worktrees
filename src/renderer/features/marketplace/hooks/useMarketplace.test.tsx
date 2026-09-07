@@ -48,6 +48,14 @@ const installedItem = {
   kind: "capability" as const,
   capability: installedDetail,
 };
+const otherDetail = {
+  ...installedDetail,
+  id: "agentic.other",
+  name: "Other",
+  version: "3.0.0",
+  packageName: "@agentic/other",
+};
+const otherItem = { kind: "capability" as const, capability: otherDetail };
 const update = {
   packageName: "@agentic/web",
   capabilityId: detail.id,
@@ -124,7 +132,7 @@ function Probe() {
       <span>{market.selected ? "selected" : "not-selected"}</span>
       <span>
         {market.detail && !("instructionPreview" in market.detail)
-          ? `detail-${market.detail.version}`
+          ? `detail-${market.detail.id}-${market.detail.version}`
           : "no-detail"}
       </span>
       <input
@@ -135,6 +143,9 @@ function Probe() {
       <button onClick={() => void market.select(item)}>select</button>
       <button onClick={() => void market.select(installedItem)}>
         select installed
+      </button>
+      <button onClick={() => void market.select(otherItem)}>
+        select other
       </button>
       <button onClick={() => void market.inspectPackage(market.query)}>
         inspect
@@ -319,7 +330,7 @@ describe("useMarketplace", () => {
     render(<Probe />);
     await screen.findByText("capability");
     await selectInstalled();
-    expect(screen.getByText("detail-1.0.0")).toBeTruthy();
+    expect(screen.getByText("detail-agentic.web-1.0.0")).toBeTruthy();
 
     mock.capabilities.get.mockResolvedValue({
       ...installedDetail,
@@ -332,7 +343,7 @@ describe("useMarketplace", () => {
       change: "updated",
       updatedAt: new Date().toISOString(),
     });
-    expect(await screen.findByText("detail-2.0.0")).toBeTruthy();
+    expect(await screen.findByText("detail-agentic.web-2.0.0")).toBeTruthy();
     expect(screen.getByText("selected")).toBeTruthy();
 
     mock.marketplace.list.mockResolvedValue([]);
@@ -344,6 +355,79 @@ describe("useMarketplace", () => {
     });
     expect(await screen.findByText("no-detail")).toBeTruthy();
     expect(screen.getByText("not-selected")).toBeTruthy();
+  });
+
+  it("does not let an old catalog refresh overwrite a newer selection", async () => {
+    const mock = api();
+    let catalogChanged:
+      ((event: CapabilityChangedEventDto) => void) | undefined;
+    mock.capabilities.onChanged.mockImplementation((callback) => {
+      catalogChanged = callback;
+      return vi.fn();
+    });
+    mock.marketplace.list.mockResolvedValue([installedItem, otherItem]);
+    mock.capabilities.get.mockImplementation(async ({ capabilityId }) =>
+      capabilityId === otherDetail.id ? otherDetail : installedDetail,
+    );
+    installApi(mock);
+    render(<Probe />);
+    await screen.findByText("capability,capability");
+    await selectInstalled();
+
+    let resolveList!: (items: (typeof installedItem)[]) => void;
+    mock.marketplace.list.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveList = resolve;
+        }),
+    );
+    catalogChanged?.({
+      scope: "catalog",
+      capabilityId: detail.id,
+      change: "updated",
+      updatedAt: new Date().toISOString(),
+    });
+    fireEvent.click(screen.getByRole("button", { name: "select other" }));
+    expect(await screen.findByText("detail-agentic.other-3.0.0")).toBeTruthy();
+    resolveList([installedItem]);
+    await waitFor(() =>
+      expect(screen.getByText("detail-agentic.other-3.0.0")).toBeTruthy(),
+    );
+    expect(mock.capabilities.get).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not update state when unmounted during a catalog refresh", async () => {
+    const mock = api();
+    let catalogChanged:
+      ((event: CapabilityChangedEventDto) => void) | undefined;
+    mock.capabilities.onChanged.mockImplementation((callback) => {
+      catalogChanged = callback;
+      return vi.fn();
+    });
+    mock.marketplace.list.mockResolvedValue([installedItem]);
+    installApi(mock);
+    const view = render(<Probe />);
+    await screen.findByText("capability");
+    await selectInstalled();
+    let resolveList!: (items: (typeof installedItem)[]) => void;
+    mock.marketplace.list.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveList = resolve;
+        }),
+    );
+    catalogChanged?.({
+      scope: "catalog",
+      capabilityId: detail.id,
+      change: "updated",
+      updatedAt: new Date().toISOString(),
+    });
+    const detailCalls = mock.capabilities.get.mock.calls.length;
+    view.unmount();
+    resolveList([installedItem]);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mock.capabilities.get).toHaveBeenCalledTimes(detailCalls);
   });
 
   it("cleans up subscriptions and uses a safe load error", async () => {

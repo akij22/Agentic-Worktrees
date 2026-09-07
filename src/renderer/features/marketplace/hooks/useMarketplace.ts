@@ -52,8 +52,9 @@ function reducer(state: State, action: Action): State {
 export function useMarketplace(runId?: string) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const generation = useRef(0);
+  const selectionRevision = useRef(0);
+  const mounted = useRef(false);
   const selectedRef = useRef<MarketplaceItemDto | undefined>(undefined);
-  selectedRef.current = state.selected;
   const patch = useCallback(
     (value: Partial<State>) => dispatch({ type: "patch", value }),
     [],
@@ -62,9 +63,15 @@ export function useMarketplace(runId?: string) {
   const refresh = useCallback(
     async (refreshSelected = false) => {
       const request = ++generation.current;
+      const revision = selectionRevision.current;
+      const selected = selectedRef.current;
+      const isCurrent = () =>
+        mounted.current &&
+        request === generation.current &&
+        revision === selectionRevision.current &&
+        selectedRef.current === selected;
       try {
         const items = await window.api.marketplace.list();
-        const selected = selectedRef.current;
         if (refreshSelected && selected?.kind === "capability") {
           const matchingItem = items.find(
             (item) =>
@@ -72,7 +79,9 @@ export function useMarketplace(runId?: string) {
               item.capability.id === selected.capability.id,
           );
           if (!matchingItem || matchingItem.kind !== "capability") {
-            if (request === generation.current) {
+            if (isCurrent()) {
+              selectionRevision.current += 1;
+              selectedRef.current = undefined;
               patch({
                 items,
                 selected: undefined,
@@ -85,11 +94,14 @@ export function useMarketplace(runId?: string) {
             }
             return;
           }
+          if (!isCurrent()) return;
           const detail = await window.api.capabilities.get({
             capabilityId: matchingItem.capability.id,
             ...(runId ? { runId } : {}),
           });
-          if (request === generation.current) {
+          if (isCurrent()) {
+            selectionRevision.current += 1;
+            selectedRef.current = matchingItem;
             patch({
               items,
               selected: matchingItem,
@@ -100,11 +112,11 @@ export function useMarketplace(runId?: string) {
           }
           return;
         }
-        if (request === generation.current) {
+        if (isCurrent()) {
           patch({ items, phase: "ready", error: undefined });
         }
       } catch {
-        if (request === generation.current) {
+        if (isCurrent()) {
           patch({
             phase: "error",
             error:
@@ -117,6 +129,7 @@ export function useMarketplace(runId?: string) {
   );
 
   useEffect(() => {
+    mounted.current = true;
     void refresh();
     const unsubscribePackages = window.api.marketplace.onPackageChanged(
       (progress) => {
@@ -149,6 +162,7 @@ export function useMarketplace(runId?: string) {
     };
     window.addEventListener("online", retryMigration);
     return () => {
+      mounted.current = false;
       generation.current += 1;
       unsubscribePackages();
       unsubscribeCatalog();
@@ -180,6 +194,8 @@ export function useMarketplace(runId?: string) {
 
   const select = useCallback(
     async (item: MarketplaceItemDto) => {
+      selectionRevision.current += 1;
+      selectedRef.current = item;
       patch({
         selected: item,
         inspection: undefined,
@@ -298,6 +314,8 @@ export function useMarketplace(runId?: string) {
         acceptedActiveVersion: review.activeVersion,
         acceptedActiveRunCount: review.activeRunCount,
       });
+      selectionRevision.current += 1;
+      selectedRef.current = undefined;
       patch({
         detail: undefined,
         selected: undefined,
@@ -334,6 +352,8 @@ export function useMarketplace(runId?: string) {
     async (id: string) => {
       try {
         await window.api.skills.remove({ skillId: id });
+        selectionRevision.current += 1;
+        selectedRef.current = undefined;
         patch({ detail: undefined, selected: undefined });
         await refresh();
       } catch {

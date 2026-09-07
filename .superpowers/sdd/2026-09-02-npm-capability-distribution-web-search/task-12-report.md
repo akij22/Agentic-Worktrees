@@ -8,8 +8,8 @@ Implemented the approved dense renderer-only Ecosystem Index. The Marketplace pa
 
 - `src/renderer/pages/Marketplace.tsx` — dense responsive Ecosystem Index, semantic filters/search, exact-spec inspection, local Skill import, safe state/error rendering, and detail action wiring.
 - `src/renderer/pages/Marketplace.test.tsx` — page filters, path-free Skill import, delegated search, and compact layout coverage.
-- `src/renderer/features/marketplace/hooks/useMarketplace.ts` — Marketplace state machine, filtering, catalog/package event refresh with selected-detail reconciliation and removed-item clearing, exact acceptance tuples, lifecycle operations, cancellation, migration retry, cleanup, and stable public errors.
-- `src/renderer/features/marketplace/hooks/useMarketplace.test.tsx` — Official inspection/install tuple, normal update, downgrade acceptance, permission-change data, removal inspection/cancel/exact tuple, package-event phase and cancellation, selected-detail catalog refresh/removal clearing, migration retry success/failure, teardown, and path-redaction coverage.
+- `src/renderer/features/marketplace/hooks/useMarketplace.ts` — Marketplace state machine, filtering, catalog/package event refresh with selection-revision and mounted/generation guards, selected-detail reconciliation, and removed-item clearing, exact acceptance tuples, lifecycle operations, cancellation, migration retry, cleanup, and stable public errors.
+- `src/renderer/features/marketplace/hooks/useMarketplace.test.tsx` — Official inspection/install tuple, normal update, downgrade acceptance, permission-change data, removal inspection/cancel/exact tuple, package-event phase and cancellation, selected-detail catalog refresh/removal clearing, deterministic old-refresh/new-selection race protection, mid-refresh unmount protection, migration retry success/failure, teardown, and path-redaction coverage.
 - `src/renderer/features/marketplace/components/MarketplaceCapabilityDetail.tsx` — trust/review, provenance, version, compatibility, permissions, setup/blocked states, Community executable warning, update warnings, and accessible in-app removal review.
 - `src/renderer/features/marketplace/components/MarketplaceCapabilityDetail.test.tsx` — Community consent, setup preservation, permission change, downgrade warning, removal review/actions, provenance, forbidden-copy, and blocked-state coverage.
 - `src/renderer/features/marketplace/components/PackageProgress.tsx` — accessible path-free four-stage package progress, accurate failure guidance, cancellation, and reduced-motion overrides.
@@ -32,7 +32,7 @@ Responsive code review covered 320/375/414/768 constraints through `min-w-0`, `m
 
 ## Verification
 
-- Focused Task 12 through fix round 2: **5 files / 24 tests passed** (Marketplace page, hook, detail, progress, picker). Directly covered flows are the exact cases listed in the changed-file test bullets above; renderer viewport automation remains outside this suite.
+- Focused Task 12 through fix round 3: **5 files / 26 tests passed** (Marketplace page, hook, detail, progress, picker). Directly covered flows are the exact cases listed in the changed-file test bullets above; renderer viewport automation remains outside this suite.
 - Full suite: **156 files / 1097 tests passed; 2 files / 25 tests failed**. Exact unrelated failures:
   - `src/main-lifecycle.test.ts`: `does not register activation or create windows until auth bootstrap settles`; `does not open DevTools in a packaged build` (2).
   - `src/main/ipc/github-auth-handlers.test.ts`: all 23 tests in `GitHub authentication IPC handlers`, from `registers every authentication channel` through `opens only the configured GitHub authorization settings URL`; common setup failure is `Marketplace service is unavailable` at `src/main/ipc/index.ts:455`.
