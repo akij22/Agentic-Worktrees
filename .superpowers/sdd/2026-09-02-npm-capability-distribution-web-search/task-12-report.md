@@ -2,18 +2,18 @@
 
 ## Scope
 
-Implemented the approved dense renderer-only Ecosystem Index. The Marketplace page now consumes the Task 11 `window.api.marketplace` contract for catalog listing, exact-package inspection, consent-bound installation/update/removal, cancellation, migration retry, and package progress. The capability picker excludes packages that are not installed and groups blocked/incompatible installations as unavailable while retaining existing setup and activation behavior.
+Implemented the approved dense renderer-only Ecosystem Index. The Marketplace page now consumes the Task 11 `window.api.marketplace` contract for catalog listing, exact-package inspection, consent-bound installation/update and in-app removal review/confirmation, cancellation, migration retry, and package progress. The capability picker excludes packages that are not installed and groups blocked/incompatible installations as unavailable while retaining existing setup and activation behavior.
 
 ## Changed files
 
 - `src/renderer/pages/Marketplace.tsx` — dense responsive Ecosystem Index, semantic filters/search, exact-spec inspection, local Skill import, safe state/error rendering, and detail action wiring.
 - `src/renderer/pages/Marketplace.test.tsx` — page filters, path-free Skill import, delegated search, and compact layout coverage.
 - `src/renderer/features/marketplace/hooks/useMarketplace.ts` — Marketplace state machine, filtering, catalog/package event refresh, exact acceptance tuples, lifecycle operations, cancellation, migration retry, cleanup, and stable public errors.
-- `src/renderer/features/marketplace/hooks/useMarketplace.test.tsx` — API aggregation, Official inspection, exact consent tuple, event cleanup, online migration retry, and path-redaction coverage.
-- `src/renderer/features/marketplace/components/MarketplaceCapabilityDetail.tsx` — trust/review, provenance, version, compatibility, permissions, setup/blocked states, Community executable warning, and reviewed actions.
-- `src/renderer/features/marketplace/components/MarketplaceCapabilityDetail.test.tsx` — Community consent warning, provenance, forbidden-copy, and blocked-state coverage.
-- `src/renderer/features/marketplace/components/PackageProgress.tsx` — accessible path-free four-stage package progress and cancellation.
-- `src/renderer/features/marketplace/components/PackageProgress.test.tsx` — stage, cancellation, and path-leak coverage.
+- `src/renderer/features/marketplace/hooks/useMarketplace.test.tsx` — Official inspection/install tuple, normal update, downgrade acceptance, permission-change data, removal inspection/cancel/exact tuple, package-event phase and cancellation, migration retry success/failure, teardown, and path-redaction coverage.
+- `src/renderer/features/marketplace/components/MarketplaceCapabilityDetail.tsx` — trust/review, provenance, version, compatibility, permissions, setup/blocked states, Community executable warning, update warnings, and accessible in-app removal review.
+- `src/renderer/features/marketplace/components/MarketplaceCapabilityDetail.test.tsx` — Community consent, setup preservation, permission change, downgrade warning, removal review/actions, provenance, forbidden-copy, and blocked-state coverage.
+- `src/renderer/features/marketplace/components/PackageProgress.tsx` — accessible path-free four-stage package progress, accurate failure guidance, cancellation, and reduced-motion overrides.
+- `src/renderer/features/marketplace/components/PackageProgress.test.tsx` — stage, cancellation, neutral failure guidance, reduced-motion class, and path-leak coverage.
 - `src/renderer/features/capabilities/components/CapabilityPicker.tsx` — installed-state filtering and accurate unavailable/setup grouping without changing activation/setup workflows.
 - `src/renderer/features/capabilities/components/CapabilityPicker.test.tsx` — updated grouping expectation.
 
@@ -32,7 +32,7 @@ Responsive code review covered 320/375/414/768 constraints through `min-w-0`, `m
 
 ## Verification
 
-- Focused Task 12: **5 files / 16 tests passed** (Marketplace page, hook, detail, progress, picker).
+- Focused Task 12 fix round 1: **5 files / 23 tests passed** (Marketplace page, hook, detail, progress, picker). Directly covered flows are the exact cases listed in the changed-file test bullets above; renderer viewport automation remains outside this suite.
 - Full suite: **156 files / 1097 tests passed; 2 files / 25 tests failed**. Exact unrelated failures:
   - `src/main-lifecycle.test.ts`: `does not register activation or create windows until auth bootstrap settles`; `does not open DevTools in a packaged build` (2).
   - `src/main/ipc/github-auth-handlers.test.ts`: all 23 tests in `GitHub authentication IPC handlers`, from `registers every authentication channel` through `opens only the configured GitHub authorization settings URL`; common setup failure is `Marketplace service is unavailable` at `src/main/ipc/index.ts:455`.
