@@ -1,12 +1,18 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { EventEmitter } from "node:events";
+import type { Server, Socket } from "node:net";
 import { expect, it, vi } from "vitest";
 import {
   runApplicationBootstrap,
   type BootstrapDependencies,
   type ElectronAppPort,
 } from "./application-bootstrap";
+import {
+  createReplyEndpoint,
+  type NetAdapter,
+} from "./cli/command-coordinator";
 
 vi.mock("./ipc", () => ({
   configureMarketplaceIpc: vi.fn(),
@@ -106,12 +112,26 @@ it("preserves UI initialization and stops services exactly once on shutdown", as
   expect(services.stop).toHaveBeenCalledTimes(1);
 });
 
-it("handles endpoint creation failure safely", async () => {
+it("handles an actual reply-server listen failure safely and cleans the server", async () => {
   const quit = vi.fn();
   const terminal = {
     writeLine: vi.fn(),
     confirm: vi.fn(),
     setExitCode: vi.fn(),
+  };
+  const close = vi.fn();
+  const server = Object.assign(new EventEmitter(), {
+    listen: vi.fn(function (this: EventEmitter) {
+      queueMicrotask(() => this.emit("error", new Error("listen failed")));
+      return this;
+    }),
+    close,
+  }) as unknown as Server;
+  const net: NetAdapter = {
+    createServer: vi.fn(() => server),
+    connect: vi.fn(() => {
+      throw new Error("not used");
+    }) as unknown as (endpoint: string) => Socket,
   };
   const app: ElectronAppPort = {
     whenReady: vi.fn(),
@@ -126,15 +146,19 @@ it("handles endpoint creation failure safely", async () => {
     initializeGitHub: vi.fn(),
     discoverAgents: vi.fn(),
     terminal: () => terminal,
-    createEndpoint: async () => {
-      throw new Error("listen");
-    },
+    createEndpoint: (input: Parameters<typeof createReplyEndpoint>[0]) =>
+      createReplyEndpoint({ ...input, net }),
   } as unknown as BootstrapDependencies;
-  await runApplicationBootstrap(["list"], app, deps);
+  await expect(
+    runApplicationBootstrap(["list"], app, deps),
+  ).resolves.toBeUndefined();
+  expect(net.createServer).toHaveBeenCalledOnce();
+  expect(server.listen).toHaveBeenCalledOnce();
+  expect(close).toHaveBeenCalledOnce();
   expect(terminal.writeLine).toHaveBeenCalledWith("Package operation failed.");
   expect(terminal.setExitCode).toHaveBeenCalledWith(1);
   expect(app.requestSingleInstanceLock).not.toHaveBeenCalled();
-  expect(quit).toHaveBeenCalled();
+  expect(quit).toHaveBeenCalledOnce();
 });
 
 it("handles secondary endpoint failure without initializing services or hanging", async () => {

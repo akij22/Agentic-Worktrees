@@ -32,3 +32,4 @@
 - Connection/listen failures are contained and mapped to safe terminal failures; endpoint validation only permits generated sockets within Electron temp or the exact Windows named-pipe namespace.
 - NDJSON bounds now cover unterminated tails following complete lines.
 - Direct CLI/bootstrap verification now covers primary-secondary forwarding and endpoint lifetime, serialization, shutdown, unsafe endpoint rejection, connection/listen failure, and the tail-bound bypass.
+- Minor test follow-up replaces the synthetic endpoint-factory rejection with a fake net/server adapter whose real `listen()` path emits an error, proving `createReplyEndpoint` closes the server and bootstrap reports a safe failure, quits once, and resolves without hanging or leaking a rejection.
