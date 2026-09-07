@@ -1,3 +1,21 @@
+import { z } from "zod";
+
+export const packageCliCommandSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("install"),
+    sourceSpec: z.string().min(1).max(4096),
+  }),
+  z.strictObject({ kind: z.literal("list") }),
+  z.strictObject({
+    kind: z.literal("update"),
+    sourceSpec: z.string().min(1).max(4096).optional(),
+  }),
+  z.strictObject({
+    kind: z.literal("remove"),
+    sourceSpec: z.string().min(1).max(4096),
+  }),
+]);
+
 export type PackageCliCommand =
   | { kind: "install"; sourceSpec: string }
   | { kind: "list" }
@@ -5,13 +23,14 @@ export type PackageCliCommand =
   | { kind: "remove"; sourceSpec: string };
 
 export type ParsedCliArguments =
-  | { mode: "ui" }
-  | { mode: "cli"; command: PackageCliCommand };
+  { mode: "ui" } | { mode: "cli"; command: PackageCliCommand };
 
 export class CliUsageError extends Error {
   readonly exitCode = 2;
   constructor() {
-    super("Usage: agentic-worktrees install <npm-spec> | list | update [npm-spec] | remove <npm-spec>");
+    super(
+      "Usage: agentic-worktrees install <npm-spec> | list | update [npm-spec] | remove <npm-spec>",
+    );
     this.name = "CliUsageError";
   }
 }
@@ -28,7 +47,12 @@ export function parseCliArguments(argv: readonly string[]): ParsedCliArguments {
       if (value) throw new CliUsageError();
       return { mode: "cli", command: { kind: "list" } };
     case "update":
-      return { mode: "cli", command: value ? { kind: "update", sourceSpec: value } : { kind: "update" } };
+      return {
+        mode: "cli",
+        command: value
+          ? { kind: "update", sourceSpec: value }
+          : { kind: "update" },
+      };
     case "remove":
       if (!value) throw new CliUsageError();
       return { mode: "cli", command: { kind: "remove", sourceSpec: value } };

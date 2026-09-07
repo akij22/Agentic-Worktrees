@@ -1,406 +1,54 @@
-import { app, BrowserWindow } from "electron";
-import path from "node:path";
+import { app } from "electron";
 import started from "electron-squirrel-startup";
-import { initDatabase } from "./main/database";
 import {
-  configureCapabilityIpc,
-  configureMarketplaceIpc,
-  configureSkillIpc,
-  registerIpcHandlers,
-} from "./main/ipc";
-import { githubAuthService } from "./main/github/auth-service";
-import {
-  applyCodingAgentCapabilities,
-  autoDiscoverAgent,
-  configureCodingAgentCapabilityBridge,
-  configureCodingAgentSkillCatalog,
-  configureCodingAgentSkillInvocationSource,
-  sendAgentMessage,
-  getAgentInstallationStatus,
-  getCodingAgentCapabilitySession,
-  stopCodingAgents,
-} from "./main/coding-agents/coding-agent-service";
+  runApplicationBootstrap,
+  type ElectronAppPort,
+} from "./main/application-bootstrap";
 import { workspaceTerminalService } from "./main/workspace/workspace-terminal-service";
-import { CapabilityRepository } from "./main/capabilities/capability-repository";
-import { createElectronCapabilityCredentialStore } from "./main/capabilities/capability-credential-store";
-import { createElectronCapabilityHostManager } from "./main/capabilities/capability-host-manager";
-import { CapabilityService } from "./main/capabilities/capability-service";
-import { createCapabilityCatalog } from "./main/capabilities/catalog";
-import { InstalledCapabilityCatalog } from "./main/capabilities/installed-catalog";
-import { ManagedPackageRepository } from "./main/packages/package-repository";
-import { createManagedPackageLayout } from "./main/packages/storage-layout";
-import { NpmPackageAcquirer } from "./main/packages/npm-acquirer";
-import { OfficialCatalogService } from "./main/packages/catalog/official-catalog";
-import { PackageLock } from "./main/packages/package-lock";
-import { CapabilityPackageInspector } from "./main/capabilities/package-inspector";
-import { CapabilityPackageInstaller } from "./main/capabilities/capability-package-installer";
-import { createElectronCapabilityPackageVerifier } from "./main/capabilities/package-verifier";
-import { WebSearchMigration } from "./main/capabilities/web-search-migration";
-import { getSqlite } from "./main/database/client";
-import { SkillRepository } from "./main/skills/skill-repository";
-import { SkillService } from "./main/skills/skill-service";
-import { createSkillStorageLayout } from "./main/skills/skill-installer";
-import { CapabilityDistributionService } from "./main/capabilities/capability-distribution-service";
+import { stopCodingAgents } from "./main/coding-agents/coding-agent-service";
 
-// Handle creating/removing shortcuts on Windows when installing/uninstalling.
-if (started) {
+if (started) app.quit();
+
+const electronApp: ElectronAppPort = {
+  whenReady: () => app.whenReady(),
+  requestSingleInstanceLock: (additionalData) =>
+    app.requestSingleInstanceLock(additionalData),
+  onSecondInstance: (listener) => {
+    const wrapped = (
+      _event: Electron.Event,
+      _argv: string[],
+      _cwd: string,
+      additionalData: unknown,
+    ) => listener(additionalData);
+    app.on("second-instance", wrapped);
+    return () => app.removeListener("second-instance", wrapped);
+  },
+  getPath: (name) => app.getPath(name),
+  quit: () => app.quit(),
+  onActivate: (listener) => {
+    app.on("activate", listener);
+    return () => app.removeListener("activate", listener);
+  },
+};
+
+void runApplicationBootstrap(
+  process.argv.slice(app.isPackaged ? 1 : 2),
+  electronApp,
+).catch(() => {
+  console.error("capability_startup_unavailable");
   app.quit();
-}
-
-const createWindow = () => {
-  // Create the browser window.
-  const mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 820,
-    minWidth: 960,
-    minHeight: 600,
-    title: "",
-    webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  });
-
-  // and load the index.html of the app.
-  if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
-    mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
-  } else {
-    mainWindow.loadFile(
-      path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`),
-    );
-  }
-
-  if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
-    mainWindow.webContents.openDevTools();
-  }
-};
-
-const initializeGitHubAuth = async (): Promise<void> => {
-  try {
-    await githubAuthService.getStatus();
-  } catch (error) {
-    console.error("Failed to initialize GitHub authentication", error);
-  }
-};
-
-const discoverCodingAgents = (): void => {
-  const status = getAgentInstallationStatus();
-  status.installations
-    .filter((installation) => !installation.configured)
-    .forEach((installation) => {
-      void autoDiscoverAgent(installation.kind).catch((error) => {
-        console.error(`Failed to discover ${installation.name}`, error);
-      });
-    });
-};
-
-let capabilityService: CapabilityService | null = null;
-let capabilityDistributionService: CapabilityDistributionService | null = null;
-let skillService: SkillService | null = null;
-
-const initializeSkills = (): SkillService => {
-  const repository = new SkillRepository();
-  const layout = createSkillStorageLayout(app.getPath("userData"));
-  const service = new SkillService({
-    repository,
-    layout,
-    runtime: {
-      syncCatalog: async (catalog) =>
-        configureCodingAgentSkillCatalog(
-          catalog
-            ? {
-                activeRoot: catalog.activeRoot,
-                expectedIds: catalog.skills.map((skill) => skill.id),
-              }
-            : null,
-        ),
-      invoke: async (runId, skill, _argumentsValue, reasoningVariant) =>
-        sendAgentMessage(
-          runId,
-          {
-            explicitSkill: {
-              id: skill.id,
-              name: skill.name,
-              path: skill.path,
-              ...(skill.arguments ? { arguments: skill.arguments } : {}),
-            },
-          },
-          reasoningVariant,
-        ),
-      getAgentKind: (runId) => getCodingAgentCapabilitySession(runId).agentKind,
-    },
-    log: (message, error) =>
-      console.error(message, error instanceof Error ? error.name : "unknown"),
-  });
-  configureSkillIpc(service);
-  configureCodingAgentSkillInvocationSource((runId) =>
-    service.listRunInvocations(runId).map((record) => ({
-      id: record.id,
-      skillId: record.skillId,
-      name: service.getSkill(record.skillId)?.name ?? record.skillId,
-      version: record.version,
-      mode: record.mode,
-      status: record.status,
-      ...(record.errorCode ? { errorCode: record.errorCode } : {}),
-      requestedAt: record.requestedAt.toISOString(),
-      ...(record.loadedAt ? { loadedAt: record.loadedAt.toISOString() } : {}),
-      ...(record.failedAt ? { failedAt: record.failedAt.toISOString() } : {}),
-    })),
-  );
-  return service;
-};
-
-const initializeCapabilities = async (): Promise<CapabilityService> => {
-  const repository = new CapabilityRepository();
-  const packageRepository = new ManagedPackageRepository();
-  const packageLayout = createManagedPackageLayout(
-    path.join(app.getPath("userData"), "managed-packages"),
-  );
-  const installedCatalog = new InstalledCapabilityCatalog(
-    packageLayout,
-    packageRepository,
-  );
-  const catalog = createCapabilityCatalog(installedCatalog);
-  try {
-    await catalog.refresh();
-  } catch {
-    throw new Error("capability_catalog_unavailable");
-  }
-  const packageLock = new PackageLock(packageLayout.root + "/.packages.lock");
-  const webSearchMigration = new WebSearchMigration({
-    capabilities: repository,
-    packages: packageRepository,
-    officialCatalog: new OfficialCatalogService(),
-    acquirer: new NpmPackageAcquirer(packageLayout),
-    inspector: new CapabilityPackageInspector(),
-    verifier: createElectronCapabilityPackageVerifier(),
-    installer: new CapabilityPackageInstaller(
-      packageLayout,
-      packageRepository,
-      repository,
-      <T>(work: () => T) => getSqlite().transaction(work)(),
-      { refreshCatalog: () => catalog.refresh() },
-    ),
-    lock: packageLock,
-  });
-  await webSearchMigration.reconcile(new AbortController().signal);
-  const credentials = createElectronCapabilityCredentialStore(
-    path.join(app.getPath("userData"), "capability-credentials.bin"),
-  );
-  const hosts = createElectronCapabilityHostManager(
-    (capabilityId, settingKey) =>
-      service.resolveSecret(capabilityId, settingKey),
-    catalog,
-  );
-  const connections = new Map<
-    string,
-    import("./main/coding-agents/types").CodingAgentCapabilityConnection
-  >();
-  const connectionKinds = new Map<
-    string,
-    import("./main/coding-agents/types").CodingAgentKind
-  >();
-  const prepare = async (
-    runId: string,
-    agentKind: import("./main/coding-agents/types").CodingAgentKind,
-  ) => {
-    const activeIds = repository
-      .listSessionCapabilities(runId)
-      .filter((item) => item.status === "active")
-      .map((item) => item.capabilityId);
-    const settings = Object.fromEntries(
-      activeIds.map((id) => [
-        id,
-        Object.fromEntries(
-          repository
-            .getSettings(id)
-            .filter((item) => item.value !== undefined)
-            .map((item) => [item.key, item.value]),
-        ),
-      ]),
-    );
-    const host = await hosts.ensureHost(runId, activeIds, settings);
-    const profileId = `aw_${runId.toLowerCase().replace(/[^a-z0-9_]+/g, "_")}`;
-    const connection = {
-      serverName: agentKind === "codex" ? host.serverName : profileId,
-      url: host.url,
-      authorizationHeader: `Bearer ${host.bearerToken}`,
-      profileId,
-    };
-    connections.set(runId, connection);
-    connectionKinds.set(runId, agentKind);
-    return connection;
-  };
-  const activator = {
-    prepareSession: prepare,
-    apply: async (runId: string, expectedToolNames: string[]) => {
-      const context = getCodingAgentCapabilitySession(runId);
-      const connection =
-        connections.get(runId) ?? (await prepare(runId, context.agentKind));
-      return applyCodingAgentCapabilities(
-        runId,
-        connection,
-        expectedToolNames,
-        [...connections.entries()]
-          .filter(([id]) => connectionKinds.get(id) === context.agentKind)
-          .map(([, value]) => value),
-      );
-    },
-    remove: async (runId: string) => {
-      const context = getCodingAgentCapabilitySession(runId);
-      const connection =
-        connections.get(runId) ?? (await prepare(runId, context.agentKind));
-      connections.delete(runId);
-      try {
-        const result = await applyCodingAgentCapabilities(
-          runId,
-          connection,
-          [],
-          [...connections.entries()]
-            .filter(([id]) => connectionKinds.get(id) === context.agentKind)
-            .map(([, value]) => value),
-        );
-        connectionKinds.delete(runId);
-        return result;
-      } catch (error) {
-        connections.set(runId, connection);
-        throw error;
-      }
-    },
-    isAgentIdle: async (runId: string) =>
-      getCodingAgentCapabilitySession(runId).idle,
-  };
-  const service = new CapabilityService({
-    repository,
-    credentials,
-    hosts,
-    activator,
-    getAgentKind: async (runId) =>
-      getCodingAgentCapabilitySession(runId).agentKind,
-    getAgentVersion: async (runId) =>
-      getCodingAgentCapabilitySession(runId).version,
-    logError: (event, code) => console.error(event, code),
-    catalog,
-  });
-  configureCodingAgentCapabilityBridge({
-    prepareSession: prepare,
-    listConnections: (agentKind) =>
-      [...connections.entries()]
-        .filter(([id]) => connectionKinds.get(id) === agentKind)
-        .map(([, value]) => value),
-    stopSession: (runId) => {
-      connections.delete(runId);
-      connectionKinds.delete(runId);
-      hosts.stopHost(runId);
-    },
-    listSessionCapabilities: (runId) =>
-      repository.listSessionCapabilities(runId).map((record) => ({
-        id: record.capabilityId,
-        name: catalog.get(record.capabilityId).manifest.name,
-        version: record.version,
-        state: record.status,
-        ...(record.errorCode ? { errorCode: record.errorCode } : {}),
-        ...(record.activatedAt
-          ? { activatedAt: record.activatedAt.toISOString() }
-          : {}),
-        ...(record.deactivatedAt
-          ? { deactivatedAt: record.deactivatedAt.toISOString() }
-          : {}),
-      })),
-    isReloading: (runId) => {
-      const interruptedStates = [
-        "pending_activation",
-        "pending_deactivation",
-        "reloading",
-      ];
-      if (connectionKinds.get(runId) === "opencode") {
-        return repository
-          .listInterruptedSessionCapabilities()
-          .some((record) => connectionKinds.get(record.runId) === "opencode");
-      }
-      return repository
-        .listSessionCapabilities(runId)
-        .some((record) => interruptedStates.includes(record.status));
-    },
-  });
-  capabilityDistributionService = new CapabilityDistributionService({
-    layout: packageLayout,
-    repository: packageRepository,
-    capabilityRepository: repository,
-    installedCatalog,
-    sessionCoordinator: service,
-    credentials,
-    verifier: createElectronCapabilityPackageVerifier(),
-    packageLock,
-    webSearchMigration,
-  });
-  configureCapabilityIpc(service);
-  return service;
-};
-
-void app
-  .whenReady()
-  .then(async () => {
-    initDatabase();
-    capabilityService = await initializeCapabilities();
-    skillService = initializeSkills();
-    configureMarketplaceIpc(capabilityDistributionService);
-    registerIpcHandlers();
-    const reconciliation = Promise.all([
-      skillService
-        .reconcileSkills()
-        .catch((error) =>
-          console.error(
-            "Skill reconciliation failed",
-            error instanceof Error ? error.name : "unknown",
-          ),
-        ),
-      capabilityService
-        .reconcileCapabilities()
-        .catch((error) =>
-          console.error(
-            "Capability reconciliation failed",
-            error instanceof Error ? error.name : "unknown",
-          ),
-        ),
-    ]);
-    await initializeGitHubAuth();
-    await reconciliation;
-    discoverCodingAgents();
-    createWindow();
-    app.on("activate", () => {
-      // On OS X it's common to re-create a window when the dock icon is clicked
-      // and there are no other windows open.
-      if (BrowserWindow.getAllWindows().length === 0) {
-        createWindow();
-      }
-    });
-  })
-  .catch(() => {
-    console.error("capability_startup_unavailable");
-  });
-
-// Quit when all windows are closed, except on macOS. There, it's common
-// for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
 });
 
-let ownedProcessesStopped = false;
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") app.quit();
+});
+let stopping = false;
 app.on("before-quit", (event) => {
-  if (ownedProcessesStopped) return;
+  if (stopping) return;
   event.preventDefault();
-  ownedProcessesStopped = true;
+  stopping = true;
   void Promise.allSettled([
     Promise.resolve(workspaceTerminalService.disposeAll()),
-    capabilityService?.stopCapabilities() ?? Promise.resolve(),
     stopCodingAgents(),
   ]).finally(() => app.quit());
 });
-
-// In this file you can include the rest of your app's specific main process
-// code. You can also put them in separate files and import them here.
