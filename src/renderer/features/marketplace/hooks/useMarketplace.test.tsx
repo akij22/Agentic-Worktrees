@@ -7,7 +7,10 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CapabilityDetailDto } from "../../../../shared/ipc/schemas";
+import type {
+  CapabilityChangedEventDto,
+  CapabilityDetailDto,
+} from "../../../../shared/ipc/schemas";
 import type { CapabilityDistributionProgress } from "../../../../shared/packages/schemas";
 import { useMarketplace } from "./useMarketplace";
 
@@ -98,7 +101,9 @@ function api() {
     },
     capabilities: {
       get: vi.fn().mockResolvedValue(installedDetail),
-      onChanged: vi.fn(() => vi.fn()),
+      onChanged: vi.fn(
+        (_callback: (event: CapabilityChangedEventDto) => void) => vi.fn(),
+      ),
     },
     skills: { get: vi.fn(), install: vi.fn(), remove: vi.fn() },
   };
@@ -115,6 +120,12 @@ function Probe() {
       <span>{market.error}</span>
       <span>
         {market.removalReview ? "removal-review" : "no-removal-review"}
+      </span>
+      <span>{market.selected ? "selected" : "not-selected"}</span>
+      <span>
+        {market.detail && !("instructionPreview" in market.detail)
+          ? `detail-${market.detail.version}`
+          : "no-detail"}
       </span>
       <input
         aria-label="query"
@@ -294,6 +305,46 @@ describe("useMarketplace", () => {
         );
     },
   );
+
+  it("refreshes selected capability detail on catalog changes and clears a removed selection", async () => {
+    const mock = api();
+    let catalogChanged:
+      ((event: CapabilityChangedEventDto) => void) | undefined;
+    mock.capabilities.onChanged.mockImplementation((callback) => {
+      catalogChanged = callback;
+      return vi.fn();
+    });
+    mock.marketplace.list.mockResolvedValue([installedItem]);
+    installApi(mock);
+    render(<Probe />);
+    await screen.findByText("capability");
+    await selectInstalled();
+    expect(screen.getByText("detail-1.0.0")).toBeTruthy();
+
+    mock.capabilities.get.mockResolvedValue({
+      ...installedDetail,
+      version: "2.0.0",
+      permissionDigest: "permissions-2",
+    });
+    catalogChanged?.({
+      scope: "catalog",
+      capabilityId: detail.id,
+      change: "updated",
+      updatedAt: new Date().toISOString(),
+    });
+    expect(await screen.findByText("detail-2.0.0")).toBeTruthy();
+    expect(screen.getByText("selected")).toBeTruthy();
+
+    mock.marketplace.list.mockResolvedValue([]);
+    catalogChanged?.({
+      scope: "catalog",
+      capabilityId: detail.id,
+      change: "removed",
+      updatedAt: new Date().toISOString(),
+    });
+    expect(await screen.findByText("no-detail")).toBeTruthy();
+    expect(screen.getByText("not-selected")).toBeTruthy();
+  });
 
   it("cleans up subscriptions and uses a safe load error", async () => {
     const mock = api();

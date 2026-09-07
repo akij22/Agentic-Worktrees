@@ -52,26 +52,69 @@ function reducer(state: State, action: Action): State {
 export function useMarketplace(runId?: string) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const generation = useRef(0);
+  const selectedRef = useRef<MarketplaceItemDto | undefined>(undefined);
+  selectedRef.current = state.selected;
   const patch = useCallback(
     (value: Partial<State>) => dispatch({ type: "patch", value }),
     [],
   );
 
-  const refresh = useCallback(async () => {
-    const request = ++generation.current;
-    try {
-      const items = await window.api.marketplace.list();
-      if (request === generation.current)
-        patch({ items, phase: "ready", error: undefined });
-    } catch {
-      if (request === generation.current)
-        patch({
-          phase: "error",
-          error:
-            "Could not load Marketplace items. Check your connection and retry.",
-        });
-    }
-  }, [patch]);
+  const refresh = useCallback(
+    async (refreshSelected = false) => {
+      const request = ++generation.current;
+      try {
+        const items = await window.api.marketplace.list();
+        const selected = selectedRef.current;
+        if (refreshSelected && selected?.kind === "capability") {
+          const matchingItem = items.find(
+            (item) =>
+              item.kind === "capability" &&
+              item.capability.id === selected.capability.id,
+          );
+          if (!matchingItem || matchingItem.kind !== "capability") {
+            if (request === generation.current) {
+              patch({
+                items,
+                selected: undefined,
+                detail: undefined,
+                inspection: undefined,
+                removalReview: undefined,
+                phase: "ready",
+                error: undefined,
+              });
+            }
+            return;
+          }
+          const detail = await window.api.capabilities.get({
+            capabilityId: matchingItem.capability.id,
+            ...(runId ? { runId } : {}),
+          });
+          if (request === generation.current) {
+            patch({
+              items,
+              selected: matchingItem,
+              detail,
+              phase: "ready",
+              error: undefined,
+            });
+          }
+          return;
+        }
+        if (request === generation.current) {
+          patch({ items, phase: "ready", error: undefined });
+        }
+      } catch {
+        if (request === generation.current) {
+          patch({
+            phase: "error",
+            error:
+              "Could not load Marketplace items. Check your connection and retry.",
+          });
+        }
+      }
+    },
+    [patch, runId],
+  );
 
   useEffect(() => {
     void refresh();
@@ -92,16 +135,16 @@ export function useMarketplace(runId?: string) {
           phase,
           error: progress.status === "failed" ? operationError : undefined,
         });
-        if (progress.status === "completed") void refresh();
+        if (progress.status === "completed") void refresh(true);
       },
     );
     const unsubscribeCatalog = window.api.capabilities.onChanged((event) => {
-      if (event.scope === "catalog") void refresh();
+      if (event.scope === "catalog") void refresh(true);
     });
     const retryMigration = () => {
       void window.api.marketplace
         .retryPendingMigrations()
-        .then(refresh)
+        .then(() => refresh())
         .catch(() => patch({ error: operationError }));
     };
     window.addEventListener("online", retryMigration);
