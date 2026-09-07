@@ -36,6 +36,17 @@ describe("command protocol", () => {
       ),
     ).toThrow("frame_too_large");
   });
+  it("enforces the bound on an unterminated tail after a valid line", () => {
+    const decoder = new NdjsonFrameDecoder();
+    expect(() =>
+      decoder.push(
+        Buffer.concat([
+          encodeCommandFrame(request),
+          Buffer.alloc(MAX_COMMAND_LINE_BYTES + 1, 97),
+        ]),
+      ),
+    ).toThrow("frame_too_large");
+  });
   it("rejects incomplete final frames", () => {
     const decoder = new NdjsonFrameDecoder();
     decoder.push("{}");

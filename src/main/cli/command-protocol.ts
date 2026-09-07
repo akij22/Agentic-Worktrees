@@ -97,6 +97,8 @@ export class NdjsonFrameDecoder {
       if (!parsed.success) throw new Error("malformed_frame");
       frames.push(parsed.data);
     }
+    if (this.pending.length > MAX_COMMAND_LINE_BYTES)
+      throw new Error("frame_too_large");
     return frames;
   }
   end(): void {

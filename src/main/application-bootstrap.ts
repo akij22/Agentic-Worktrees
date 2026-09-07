@@ -6,6 +6,8 @@ import { runPackageCommand } from "./cli/run-command";
 import {
   createReplyEndpoint,
   executeForwardedCommand,
+  createCommandExecutionQueue,
+  type ReplyEndpoint,
 } from "./cli/command-coordinator";
 import type { ApplicationServices } from "./application-services";
 
@@ -16,6 +18,7 @@ export interface ElectronAppPort {
   getPath(name: "userData" | "temp"): string;
   quit(): void;
   onActivate?(listener: () => void): () => void;
+  onBeforeQuit?(listener: () => Promise<void>): () => void;
 }
 export interface BootstrapDependencies {
   createServices(input: {
@@ -26,6 +29,11 @@ export interface BootstrapDependencies {
   initializeGitHub(): Promise<void>;
   discoverAgents(): void;
   terminal(): NodeCliTerminal;
+  createEndpoint?(input: {
+    tempPath: string;
+    command: import("./cli/arguments").PackageCliCommand;
+    terminal: NodeCliTerminal;
+  }): Promise<ReplyEndpoint>;
 }
 const createWindow = (): void => {
   const window = new BrowserWindow({
@@ -94,31 +102,69 @@ export async function runApplicationBootstrap(
   }
   if (parsed.mode === "cli") {
     const terminal = dependencies.terminal();
-    const endpoint = await createReplyEndpoint({
-      tempPath: electronApp.getPath("temp"),
-      command: parsed.command,
-      terminal,
-    });
+    let endpoint: ReplyEndpoint;
+    try {
+      endpoint = await (dependencies.createEndpoint ?? createReplyEndpoint)({
+        tempPath: electronApp.getPath("temp"),
+        command: parsed.command,
+        terminal,
+      });
+    } catch {
+      terminal.writeLine("Package operation failed.");
+      terminal.setExitCode(1);
+      electronApp.quit();
+      return;
+    }
     const primary = electronApp.requestSingleInstanceLock({ ...endpoint.data });
     if (!primary) {
       try {
         await endpoint.wait();
+      } catch {
+        terminal.writeLine("Package operation failed.");
+        terminal.setExitCode(1);
       } finally {
-        await endpoint.close();
+        await endpoint.close().catch(() => undefined);
         electronApp.quit();
       }
       return;
     }
-    await endpoint.close();
-    await electronApp.whenReady();
-    const services = await dependencies.createServices({
-      userDataPath: electronApp.getPath("userData"),
-      mode: "cli",
-    });
+    let services: ApplicationServices | undefined;
+    const pending: unknown[] = [];
+    const forwarded = new Set<Promise<unknown>>();
+    const queued = createCommandExecutionQueue(
+      async (command, remote, signal) => {
+        if (!services || signal.aborted) return;
+        await runPackageCommand(command, services, remote);
+      },
+    );
+    const dispatch = (data: unknown) => {
+      if (!services) {
+        pending.push(data);
+        return;
+      }
+      const work = executeForwardedCommand(
+        data,
+        queued,
+        electronApp.getPath("temp"),
+      ).catch(() => false);
+      forwarded.add(work);
+      void work.finally(() => forwarded.delete(work));
+    };
+    const removeSecondInstance = electronApp.onSecondInstance(dispatch);
     try {
-      await runPackageCommand(parsed.command, services, terminal);
+      await electronApp.whenReady();
+      services = await dependencies.createServices({
+        userDataPath: electronApp.getPath("userData"),
+        mode: "cli",
+      });
+      for (const data of pending.splice(0)) dispatch(data);
+      await queued(parsed.command, terminal, new AbortController().signal);
+      removeSecondInstance();
+      await Promise.allSettled([...forwarded]);
     } finally {
-      await services.stop();
+      removeSecondInstance();
+      await endpoint.close().catch(() => undefined);
+      await services?.stop();
       electronApp.quit();
     }
     return;
@@ -129,16 +175,22 @@ export async function runApplicationBootstrap(
   }
   let services: ApplicationServices | undefined;
   const pending: unknown[] = [];
+  const queued = createCommandExecutionQueue(
+    async (command, terminal, signal) => {
+      if (!services || signal.aborted) return;
+      await runPackageCommand(command, services, terminal);
+    },
+  );
   const removeSecondInstance = electronApp.onSecondInstance((data) => {
     if (!services) {
       pending.push(data);
       return;
     }
-    void executeForwardedCommand(data, (command, terminal, signal) =>
-      signal.aborted
-        ? Promise.resolve()
-        : runPackageCommand(command, services!, terminal),
-    );
+    void executeForwardedCommand(
+      data,
+      queued,
+      electronApp.getPath("temp"),
+    ).catch(() => false);
   });
   await electronApp.whenReady();
   services = await dependencies.createServices({
@@ -146,11 +198,11 @@ export async function runApplicationBootstrap(
     mode: "ui",
   });
   for (const data of pending.splice(0))
-    void executeForwardedCommand(data, (command, terminal, signal) =>
-      signal.aborted
-        ? Promise.resolve()
-        : runPackageCommand(command, services!, terminal),
-    );
+    void executeForwardedCommand(
+      data,
+      queued,
+      electronApp.getPath("temp"),
+    ).catch(() => false);
   const { configureMarketplaceIpc, registerIpcHandlers } =
     await import("./ipc");
   configureMarketplaceIpc(services.distributionService);
@@ -170,5 +222,11 @@ export async function runApplicationBootstrap(
   electronApp.onActivate?.(() => {
     if (BrowserWindow.getAllWindows().length === 0) dependencies.createWindow();
   });
-  void removeSecondInstance;
+  let stopped = false;
+  electronApp.onBeforeQuit?.(async () => {
+    if (stopped) return;
+    stopped = true;
+    removeSecondInstance();
+    await services?.stop();
+  });
 }

@@ -9,6 +9,7 @@ import { stopCodingAgents } from "./main/coding-agents/coding-agent-service";
 
 if (started) app.quit();
 
+const beforeQuitTasks = new Set<() => Promise<void>>();
 const electronApp: ElectronAppPort = {
   whenReady: () => app.whenReady(),
   requestSingleInstanceLock: (additionalData) =>
@@ -29,6 +30,10 @@ const electronApp: ElectronAppPort = {
     app.on("activate", listener);
     return () => app.removeListener("activate", listener);
   },
+  onBeforeQuit: (listener) => {
+    beforeQuitTasks.add(listener);
+    return () => beforeQuitTasks.delete(listener);
+  },
 };
 
 void runApplicationBootstrap(
@@ -48,6 +53,7 @@ app.on("before-quit", (event) => {
   event.preventDefault();
   stopping = true;
   void Promise.allSettled([
+    ...[...beforeQuitTasks].map((task) => task()),
     Promise.resolve(workspaceTerminalService.disposeAll()),
     stopCodingAgents(),
   ]).finally(() => app.quit());

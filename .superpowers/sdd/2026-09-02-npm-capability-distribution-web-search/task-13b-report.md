@@ -23,3 +23,12 @@
 - `npm run lint` — blocked by the recorded duplicate inherited `eslint-plugin-import` installation/configuration.
 - `git diff --check` — passed.
 - Packaged `list` was not invoked because it could run startup migration/catalog acquisition against the real user-data directory, conflicting with the no-network/no-user-state constraint.
+
+## Fix round 1
+
+- CLI primaries now retain their reply endpoint and second-instance listener throughout local execution, queue early requests, drain authenticated forwards, then close deterministically; secondaries have a bounded safe-failure result.
+- Forwarded commands share an internal serial queue, including failure recovery, so Marketplace/CLI service operations cannot overlap outside the distribution lock.
+- UI shutdown now awaits `ApplicationServices.stop()` exactly once through the Electron before-quit cleanup path.
+- Connection/listen failures are contained and mapped to safe terminal failures; endpoint validation only permits generated sockets within Electron temp or the exact Windows named-pipe namespace.
+- NDJSON bounds now cover unterminated tails following complete lines.
+- Direct CLI/bootstrap verification now covers primary-secondary forwarding and endpoint lifetime, serialization, shutdown, unsafe endpoint rejection, connection/listen failure, and the tail-bound bypass.

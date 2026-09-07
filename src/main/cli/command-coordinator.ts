@@ -50,6 +50,7 @@ export async function createReplyEndpoint(input: {
   command: PackageCliCommand;
   terminal: CliTerminal;
   net?: NetAdapter;
+  timeoutMs?: number;
 }): Promise<ReplyEndpoint> {
   const net = input.net ?? nodeNet;
   const requestId = randomUUID().replaceAll("-", "");
@@ -66,6 +67,14 @@ export async function createReplyEndpoint(input: {
   const result = new Promise<number>((resolve) => {
     resolveResult = resolve;
   });
+  const timeout = setTimeout(() => {
+    if (settled) return;
+    settled = true;
+    input.terminal.writeLine("Package operation failed.");
+    input.terminal.setExitCode(1);
+    resolveResult(1);
+  }, input.timeoutMs ?? 30_000);
+  timeout.unref?.();
   const server = net.createServer((candidate) => {
     if (socket) {
       candidate.destroy();
@@ -110,11 +119,13 @@ export async function createReplyEndpoint(input: {
           else if (frame.type === "result") {
             input.terminal.setExitCode(frame.exitCode);
             settled = true;
+            clearTimeout(timeout);
             resolveResult(frame.exitCode);
           } else if (frame.type === "error") {
             input.terminal.writeLine("Package operation failed.");
             input.terminal.setExitCode(1);
             settled = true;
+            clearTimeout(timeout);
             resolveResult(1);
           }
         }
@@ -127,16 +138,24 @@ export async function createReplyEndpoint(input: {
         input.terminal.writeLine("Package operation failed.");
         input.terminal.setExitCode(1);
         settled = true;
+        clearTimeout(timeout);
         resolveResult(1);
       }
     });
   });
   await safeUnlink(data.endpoint);
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(data.endpoint, resolve);
-  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(data.endpoint, resolve);
+    });
+  } catch {
+    server.close();
+    await safeUnlink(data.endpoint);
+    throw new Error("reply_endpoint_unavailable");
+  }
   const close = async () => {
+    clearTimeout(timeout);
     socket?.destroy();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await safeUnlink(data.endpoint);
@@ -144,22 +163,61 @@ export async function createReplyEndpoint(input: {
   return { data, wait: () => result, close };
 }
 
+export function createCommandExecutionQueue(
+  execute: CommandExecutor,
+): CommandExecutor {
+  let tail = Promise.resolve();
+  return (command, terminal, signal) => {
+    const task = tail.then(() => execute(command, terminal, signal));
+    tail = task.catch(() => undefined);
+    return task;
+  };
+}
+
+export const isForwardingEndpointAllowed = (
+  endpoint: string,
+  tempPath: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean => {
+  if (platform === "win32")
+    return (
+      endpoint.startsWith("\\\\.\\pipe\\agentic-worktrees-") &&
+      /^[a-f0-9]{32}$/.test(
+        endpoint.slice("\\\\.\\pipe\\agentic-worktrees-".length),
+      )
+    );
+  return (
+    path.dirname(endpoint) === path.resolve(tempPath) &&
+    /^aw-[a-f0-9]{8}\.sock$/.test(path.basename(endpoint))
+  );
+};
+
 export async function executeForwardedCommand(
   raw: unknown,
   execute: CommandExecutor,
+  tempPath: string,
   net: NetAdapter = nodeNet,
 ): Promise<boolean> {
   const parsed = forwardingDataSchema.safeParse(raw);
-  if (!parsed.success) return false;
+  if (
+    !parsed.success ||
+    !isForwardingEndpointAllowed(parsed.data.endpoint, tempPath)
+  )
+    return false;
   const data = parsed.data;
   const socket = net.connect(data.endpoint);
   const decoder = new NdjsonFrameDecoder();
   const abort = new AbortController();
   const send = (frame: CommandFrame) => socket.write(encodeCommandFrame(frame));
-  await new Promise<void>((resolve, reject) => {
-    socket.once("connect", resolve);
-    socket.once("error", reject);
-  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+    });
+  } catch {
+    socket.destroy();
+    return false;
+  }
   send({
     schemaVersion: 1,
     requestId: data.requestId,
