@@ -1,6 +1,6 @@
 import npa from "npm-package-arg";
 import type { CapabilityDistributionService } from "../capabilities/capability-distribution-service";
-import { packageErrorCodeSchema, packageSourceSpecSchema, type CapabilityPackageInspectionDto } from "../../shared/packages/schemas";
+import { packageErrorCodeSchema, packageSourceSpecSchema, type CapabilityPackageInspectionDto, type PackageErrorCode } from "../../shared/packages/schemas";
 import type { PackageCliCommand } from "./arguments";
 import { formatPackageProgress, type CliTerminal } from "./terminal-ui";
 
@@ -10,7 +10,7 @@ export type PackageCommandServices = {
     "checkForUpdates" | "update" | "inspectRemoval" | "remove">;
 };
 
-const safeErrors: Record<string, string> = {
+const safeErrors: Record<PackageErrorCode, string> = {
   package_not_found: "Package not found.", package_version_not_found: "Package version not found.",
   package_source_invalid: "Invalid npm package specification.", package_integrity_failed: "Package integrity verification failed.",
   package_archive_invalid: "Package archive is invalid.", package_manifest_invalid: "Capability manifest is invalid.",
@@ -55,6 +55,7 @@ const install = async (sourceSpec: string, service: PackageCommandServices["dist
   );
   const inspection = await service.inspect({ sourceSpec, intent: "install", ...(official ? { officialCapabilityId: official.id } : {}) });
   printInspection(inspection, terminal);
+  if (inspection.releaseNotes) terminal.writeLine(`Release notes: ${inspection.releaseNotes}`);
   if (!await terminal.confirm("Install this capability? (y/N)")) return;
   const installed = await service.install(acceptance(inspection));
   terminal.writeLine(installed.id === "agentic-worktrees.web-search"

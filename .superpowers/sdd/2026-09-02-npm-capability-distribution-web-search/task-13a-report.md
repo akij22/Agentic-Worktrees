@@ -16,3 +16,9 @@
 - Task 7–12 focused regression command — 13 files, 194 tests passed.
 - `npm run typecheck` — blocked only by the pre-existing `CodingAgentSession.tsx:387` `skillInvocations` prop mismatch recorded in the baseline ledger.
 - `git diff --check` — passed.
+
+## Fix round 1
+
+- Install review now displays nonempty release notes before confirmation.
+- Safe error text is exhaustively typed by `PackageErrorCode`; known and unknown failures have direct safe-output tests.
+- CLI/regression verification: 13 files, 195 tests passed. Typecheck remains blocked only by the recorded unrelated renderer prop mismatch.

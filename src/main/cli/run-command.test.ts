@@ -5,7 +5,7 @@ const inspection = { inspectionId: "inspection-1", packageName: "@agentic-worktr
 
 const setup = (confirmed = true) => {
   const unsubscribe = vi.fn();
-  const service = { subscribe: vi.fn(() => unsubscribe), listMarketplaceCapabilities: vi.fn().mockResolvedValue([]), inspect: vi.fn().mockResolvedValue(inspection), install: vi.fn().mockResolvedValue(inspection.capability), checkForUpdates: vi.fn().mockResolvedValue([]), update: vi.fn().mockResolvedValue(inspection.capability), inspectRemoval: vi.fn().mockResolvedValue({ inspectionId: "remove-1", packageName: inspection.packageName, capabilityId: inspection.capability.id, activeVersion: "0.1.0", activeIntegrity: "sha512-safe", activeContentDigest: "digest", activeRunCount: 2, expiresAt: new Date().toISOString() }), remove: vi.fn() };
+  const service = { subscribe: vi.fn((_listener?: (event: unknown) => void) => unsubscribe), listMarketplaceCapabilities: vi.fn().mockResolvedValue([]), inspect: vi.fn().mockResolvedValue(inspection), install: vi.fn().mockResolvedValue(inspection.capability), checkForUpdates: vi.fn().mockResolvedValue([]), update: vi.fn().mockResolvedValue(inspection.capability), inspectRemoval: vi.fn().mockResolvedValue({ inspectionId: "remove-1", packageName: inspection.packageName, capabilityId: inspection.capability.id, activeVersion: "0.1.0", activeIntegrity: "sha512-safe", activeContentDigest: "digest", activeRunCount: 2, expiresAt: new Date().toISOString() }), remove: vi.fn() };
   const lines: string[] = []; const terminal = { writeLine: vi.fn((line: string) => lines.push(line)), confirm: vi.fn().mockResolvedValue(confirmed), setExitCode: vi.fn() };
   return { service, terminal, lines, unsubscribe };
 };
@@ -16,6 +16,7 @@ describe("runPackageCommand", () => {
     await runPackageCommand({ kind: "install", sourceSpec: inspection.requestedSpec }, { distributionService: service as never }, terminal);
     expect(lines.join("\n")).toContain("arbitrary Node code");
     expect(lines.join("\n")).toContain("Compatibility: Codex supported; OpenCode supported");
+    expect(lines).toContain("Release notes: notes");
     expect(service.install).toHaveBeenCalledWith({ inspectionId: "inspection-1", acceptedPackageName: inspection.packageName, acceptedVersion: "0.1.0", acceptedIntegrity: "sha512-safe", acceptedPermissionDigest: "permissions" });
     expect(lines).toContain("Installed Web Search. It is now available in every chat.");
     expect(unsubscribe).toHaveBeenCalledOnce();
@@ -28,7 +29,7 @@ describe("runPackageCommand", () => {
   });
   it("prints subscribed progress without exposing event internals", async () => {
     const { service, terminal, lines } = setup(false);
-    service.subscribe.mockImplementation((listener) => { listener({ operationId: "secret-op", action: "install", stage: "downloading", status: "in_progress", updatedAt: new Date().toISOString() }); return vi.fn(); });
+    service.subscribe.mockImplementation((listener) => { listener?.({ operationId: "secret-op", action: "install", stage: "downloading", status: "in_progress", updatedAt: new Date().toISOString() }); return vi.fn(); });
     await runPackageCommand({ kind: "install", sourceSpec: inspection.requestedSpec }, { distributionService: service as never }, terminal);
     expect(lines.some((line) => line.includes("Downloading package"))).toBe(true);
     expect(lines.join("\n")).not.toContain("secret-op");
@@ -48,10 +49,13 @@ describe("runPackageCommand", () => {
     await runPackageCommand({ kind: "remove", sourceSpec: inspection.packageName }, { distributionService: service as never }, terminal);
     expect(service.remove).toHaveBeenCalledWith({ inspectionId: "remove-1", packageName: inspection.packageName, acceptedActiveVersion: "0.1.0", acceptedActiveRunCount: 2 });
   });
-  it("maps service failures safely and always unsubscribes", async () => {
-    const { service, terminal, lines, unsubscribe } = setup(); service.listMarketplaceCapabilities.mockRejectedValue(new Error("/private/token"));
+  it.each([
+    ["package_download_failed", "Package download failed."],
+    ["/private/token", "Package operation failed."],
+  ])("maps service failure %s to stable safe output", async (failure, expected) => {
+    const { service, terminal, lines, unsubscribe } = setup(); service.listMarketplaceCapabilities.mockRejectedValue(new Error(failure));
     await runPackageCommand({ kind: "list" }, { distributionService: service as never }, terminal);
-    expect(lines).toEqual(["Package operation failed."]); expect(terminal.setExitCode).toHaveBeenCalledWith(1); expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(lines).toEqual([expected]); expect(terminal.setExitCode).toHaveBeenCalledWith(1); expect(unsubscribe).toHaveBeenCalledOnce();
   });
   it("maps cancellation to 130", async () => {
     const { service, terminal } = setup(); service.listMarketplaceCapabilities.mockRejectedValue(Object.assign(new Error("stopped"), { name: "AbortError" }));
