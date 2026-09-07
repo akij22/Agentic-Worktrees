@@ -1,9 +1,40 @@
 // @vitest-environment jsdom
-import {cleanup,fireEvent,render,screen,waitFor} from "@testing-library/react";import {afterEach,describe,expect,it,vi} from "vitest";import {useMarketplace} from "./useMarketplace";
-afterEach(cleanup);const capability={id:"web",name:"Web",description:"Search",version:"1",category:"search",source:"bundled",compatibility:{codex:"supported",opencode:"supported"},state:"ready"};const skill={id:"review",name:"review",description:"Review",version:"1",source:"local",compatibility:{codex:"supported",opencode:"supported"},installationState:"installed",automaticInvocation:true} as const;
-function Probe(){const value=useMarketplace();return <div>{value.items.map(x=>x.kind).join(",")||"empty"}</div>}
-describe("useMarketplace",()=>{it("aggregates capabilities and skills",async()=>{const unsubA=vi.fn(),unsubB=vi.fn();Object.defineProperty(window,"api",{configurable:true,value:{capabilities:{list:vi.fn(async()=>[capability]),onChanged:vi.fn(()=>unsubA)},skills:{list:vi.fn(async()=>[skill]),onChanged:vi.fn(()=>unsubB)}}});const result=render(<Probe/>);await waitFor(()=>expect(screen.getByText("capability,skill")).toBeTruthy());result.unmount();expect(unsubA).toHaveBeenCalled();expect(unsubB).toHaveBeenCalled();});
- it("coalesces initial loading into a combined list",async()=>{Object.defineProperty(window,"api",{configurable:true,value:{capabilities:{list:vi.fn(async()=>[]),onChanged:vi.fn(()=>()=>undefined)},skills:{list:vi.fn(async()=>[]),onChanged:vi.fn(()=>()=>undefined)}}});render(<Probe/>);await waitFor(()=>expect(screen.getByText("empty")).toBeTruthy());});});
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { CapabilityDetailDto } from "../../../../shared/ipc/schemas";
+import { useMarketplace } from "./useMarketplace";
 
-function ActionProbe(){const value=useMarketplace();return <div><button onClick={()=>void value.install()}>install</button><button onClick={()=>void value.remove("review")}>remove</button><button onClick={()=>void value.select({kind:"skill",skill})}>detail</button><span>{value.loading?"loading":"ready"}</span><span>{value.error}</span></div>}
-describe("marketplace action errors",()=>{it.each([["install","Could not install the skill."],["remove","Could not remove the skill."],["detail","Could not load marketplace item details."]] as const)("captures %s rejection",async(action,message)=>{Object.defineProperty(window,"api",{configurable:true,value:{capabilities:{list:vi.fn(async()=>[]),onChanged:vi.fn(()=>()=>undefined)},skills:{list:vi.fn(async()=>[]),onChanged:vi.fn(()=>()=>undefined),install:vi.fn(async()=>{throw new Error("secret")}),remove:vi.fn(async()=>{throw new Error("secret")}),get:vi.fn(async()=>{throw new Error("secret")})}}});render(<ActionProbe/>);await waitFor(()=>expect(screen.getByText("ready")).toBeTruthy());fireEvent.click(screen.getByRole("button",{name:action}));await waitFor(()=>expect(screen.getByText(message)).toBeTruthy());});});
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+const detail: CapabilityDetailDto = { id: "agentic.web", name: "Web Search", description: "Search", version: "1.0.0", category: "search", compatibility: { codex: "supported", opencode: "supported" }, state: "ready", secretConfigured: false, installationState: "available", source: "npm", packageName: "@agentic/web", trust: "official", reviewStatus: "official-reviewed", sdkVersion: "^1", author: { name: "Agentic" }, license: "MIT", permissions: { network: [], secrets: [] }, settings: [], activeRunCount: 0, providedTools: ["search"], permissionDigest: "permissions" };
+const item = { kind: "capability" as const, capability: detail };
+const inspection = { inspectionId: "inspection", packageName: "@agentic/web", requestedSpec: "@agentic/web", resolvedVersion: "1.0.0", integrity: "sha512-ok", contentDigest: "content", trust: "official" as const, reviewStatus: "official-reviewed" as const, releaseNotes: "", capability: detail, permissionDigest: "permissions", expiresAt: new Date().toISOString() };
+function api() {
+  return { marketplace: { list: vi.fn().mockResolvedValue([item]), inspect: vi.fn().mockResolvedValue(inspection), install: vi.fn().mockResolvedValue({ ...detail, installationState: "installed" }), update: vi.fn(), inspectRemoval: vi.fn(), remove: vi.fn(), cancel: vi.fn(), retryPendingMigrations: vi.fn().mockResolvedValue(undefined), onPackageChanged: vi.fn(() => vi.fn()) }, capabilities: { get: vi.fn().mockResolvedValue(detail), onChanged: vi.fn(() => vi.fn()) }, skills: { get: vi.fn(), install: vi.fn(), remove: vi.fn() } };
+}
+function Probe() {
+  const market = useMarketplace();
+  return <><span>{market.loading ? "loading" : market.phase}</span><span>{market.items.map((entry) => entry.kind).join(",") || "empty"}</span><span>{market.error}</span><input aria-label="query" value={market.query} onChange={(event) => market.setQuery(event.target.value)} /><button onClick={() => void market.select(item)}>select</button><button onClick={() => void market.inspectPackage(market.query)}>inspect</button><button onClick={() => void market.installCapability()}>install</button></>;
+}
+
+describe("useMarketplace", () => {
+  it("loads the marketplace API and inspects an available Official item as data", async () => {
+    const mock = api(); Object.defineProperty(window, "api", { configurable: true, value: mock });
+    render(<Probe />); await screen.findByText("capability"); fireEvent.click(screen.getByRole("button", { name: "select" }));
+    await waitFor(() => expect(mock.marketplace.inspect).toHaveBeenCalledWith({ sourceSpec: "@agentic/web", officialCapabilityId: "agentic.web", intent: "install" }));
+  });
+
+  it("passes the exact acceptance tuple and cleans up subscriptions", async () => {
+    const mock = api(); Object.defineProperty(window, "api", { configurable: true, value: mock });
+    const view = render(<Probe />); await screen.findByText("capability"); fireEvent.change(screen.getByLabelText("query"), { target: { value: "@agentic/web@1.0.0" } }); fireEvent.click(screen.getByRole("button", { name: "inspect" })); await screen.findByText("review"); fireEvent.click(screen.getByRole("button", { name: "install" }));
+    await waitFor(() => expect(mock.marketplace.install).toHaveBeenCalledWith({ inspectionId: "inspection", acceptedPackageName: "@agentic/web", acceptedVersion: "1.0.0", acceptedIntegrity: "sha512-ok", acceptedPermissionDigest: "permissions" }));
+    view.unmount(); expect(mock.marketplace.onPackageChanged.mock.results[0]?.value).toHaveBeenCalled(); expect(mock.capabilities.onChanged.mock.results[0]?.value).toHaveBeenCalled();
+  });
+
+  it("retries pending migrations when connectivity returns", async () => {
+    const mock = api(); Object.defineProperty(window, "api", { configurable: true, value: mock }); render(<Probe />); await screen.findByText("capability"); window.dispatchEvent(new Event("online")); await waitFor(() => expect(mock.marketplace.retryPendingMigrations).toHaveBeenCalledOnce());
+  });
+
+  it("uses a safe load error without leaking backend details", async () => {
+    const mock = api(); mock.marketplace.list.mockRejectedValue(new Error("/Users/private/.staging/token")); Object.defineProperty(window, "api", { configurable: true, value: mock }); render(<Probe />); expect(await screen.findByText(/Could not load Marketplace items/)).toBeTruthy(); expect(document.body.textContent).not.toContain("/Users/private");
+  });
+});

@@ -8,10 +8,12 @@ import { CapabilitySetupDialog } from "./CapabilitySetupDialog";
 const label = (state: string) => state.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 const activeStates = new Set(["active", "pending_activation", "pending_deactivation", "reloading"]);
 
+const blockedInstallations = new Set(["blocked", "invalid", "incompatible", "migration_pending"]);
+
 function groupFor(capability: CapabilitySummaryDto, agentKind: CodingAgentKindDto): string {
-  if (capability.compatibility[agentKind] !== "supported" || capability.state === "unavailable") return "Incompatible";
+  if (blockedInstallations.has(capability.installationState) || capability.compatibility[agentKind] !== "supported" || capability.state === "unavailable") return "Unavailable";
   if (activeStates.has(capability.state)) return "Active";
-  if (capability.state === "available" || capability.state === "needs_setup") return "Needs setup";
+  if (capability.installationState === "needs_setup" || capability.state === "needs_setup") return "Needs setup";
   return "Ready";
 }
 
@@ -27,25 +29,29 @@ export function CapabilityPicker({ runId, agentKind, capabilities, disabled, onA
   const [setup, setSetup] = useState<CapabilityDetailDto>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  const groups = ["Active", "Ready", "Needs setup", "Incompatible"];
+  const groups = ["Active", "Ready", "Needs setup", "Unavailable"];
   const options: PickerOption[] = capabilities
+    .filter((capability) => capability.installationState !== "available" && capability.installationState !== "installing" && capability.installationState !== "removing")
     .map((capability) => {
       const group = groupFor(capability, agentKind);
+      const hint = blockedInstallations.has(capability.installationState)
+        ? label(capability.installationState)
+        : capability.state === "activation_failed" ? "Retry" : label(capability.state);
       return {
         id: capability.id,
         label: capability.name,
-        hint: capability.state === "activation_failed" ? "Retry" : label(capability.state),
+        hint,
         group,
-        disabled: group === "Incompatible" || !["active", "ready", "inactive", "activation_failed", "available", "needs_setup"].includes(capability.state),
+        disabled: group === "Unavailable" || !["active", "ready", "inactive", "activation_failed", "needs_setup"].includes(capability.state),
       };
     })
     .sort((left, right) => groups.indexOf(left.group ?? "") - groups.indexOf(right.group ?? "") || left.label.localeCompare(right.label));
 
   const choose = async (id: string) => {
     const capability = capabilities.find((item) => item.id === id);
-    if (!capability || groupFor(capability, agentKind) === "Incompatible") return;
+    if (!capability || groupFor(capability, agentKind) === "Unavailable") return;
     setError(undefined);
-    if (capability.state === "needs_setup" || capability.state === "available") {
+    if (capability.state === "needs_setup") {
       try { setSetup(await window.api.capabilities.get({ capabilityId: id, runId })); }
       catch { setError("Could not open capability setup."); }
       return;

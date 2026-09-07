@@ -20,7 +20,7 @@ describe("CapabilityPicker", () => {
     const incompatible = { ...summary("ready", { codex: "unsupported", opencode: "supported" }), id: "cap-incompatible" };
     const { onActivate } = renderPicker([summary("active"), summary("ready"), summary("needs_setup"), summary("activation_failed"), incompatible]);
     await userEvent.click(screen.getByRole("button", { name: "Capabilities" }));
-    for (const group of ["Active", "Ready", "Needs setup", "Incompatible"]) expect(screen.getByText(group, { selector: "p" })).toBeTruthy();
+    for (const group of ["Active", "Ready", "Needs setup", "Unavailable"]) expect(screen.getByText(group, { selector: "p" })).toBeTruthy();
     await userEvent.click(screen.getByRole("option", { name: /Web Search activation_failed.*Retry/i }));
     expect(onActivate).toHaveBeenCalledWith("cap-activation_failed");
   });
