@@ -14,6 +14,19 @@ afterEach(async () => {
 });
 
 describe("published capability package contracts", () => {
+  it.each([
+    ["@agentic-worktrees/capability-sdk", "agentic-worktrees-capability-sdk-0.1.0.tgz", ["package/package.json", "package/README.md", "package/LICENSE", "package/dist/index.js", "package/dist/index.d.ts"]],
+    ["@agentic-worktrees/web-search", "agentic-worktrees-web-search-0.1.0.tgz", ["package/package.json", "package/README.md", "package/LICENSE", "package/LICENSE.pi-web-access", "package/capability.json", "package/dist/index.js"]],
+  ])("dry-runs %s with the exact release name, version, docs, licenses, and entries", async (workspace, filename, requiredFiles) => {
+    const { stdout } = await execFileAsync("npm", ["pack", "--json", "--dry-run", "--ignore-scripts", "--workspace", workspace], {
+      cwd: resolve("."), maxBuffer: 10 * 1024 * 1024,
+    });
+    const jsonStart = stdout.lastIndexOf("\n[");
+    const [result] = JSON.parse(stdout.slice(jsonStart < 0 ? 0 : jsonStart + 1)) as [{ filename: string; files: { path: string }[] }];
+    expect(result.filename).toBe(filename);
+    expect(result.files.map((file) => `package/${file.path}`)).toEqual(expect.arrayContaining(requiredFiles));
+  }, 30_000);
+
   it("packs Web Search as a self-contained production artifact", async () => {
     const temporaryDirectory = await mkdtemp(join(tmpdir(), "agentic-worktrees-web-search-pack-"));
     temporaryDirectories.push(temporaryDirectory);
@@ -33,6 +46,7 @@ describe("published capability package contracts", () => {
     expect(files).toEqual(expect.arrayContaining([
       "package/package.json",
       "package/capability.json",
+      "package/README.md",
       "package/dist/index.js",
       "package/LICENSE",
       "package/LICENSE.pi-web-access",

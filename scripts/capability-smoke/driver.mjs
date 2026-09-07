@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { _electron as electron } from "@playwright/test";
 
 /** @typedef {"codex" | "opencode"} AgentKind */
@@ -26,16 +29,17 @@ export function smokeSessionIsIdle(status) {
 
 /** @returns {CapabilitySmokeDriver} */
 export function createElectronCapabilitySmokeDriver(executablePath = process.env.AW_SMOKE_EXECUTABLE) {
-  let application; let page; const logs = [];
+  let application; let page; let userDataDirectory; const logs = [];
   const evaluate = async (callback, argument) => { if (!page) throw new Error("Smoke driver is not launched."); return page.evaluate(callback, argument); };
   return {
     async launch() {
       if (!executablePath) throw new Error("AW_SMOKE_EXECUTABLE is required.");
-      application = await electron.launch({ executablePath });
-      page = await application.firstWindow();
+      userDataDirectory = await mkdtemp(join(tmpdir(), "aw-capability-provider-smoke-"));
+      application = await electron.launch({ executablePath, args: [`--user-data-dir=${userDataDirectory}`] });
       const child = application.process();
       child?.stdout?.on("data", (chunk) => logs.push(chunk.toString("utf8")));
       child?.stderr?.on("data", (chunk) => logs.push(chunk.toString("utf8")));
+      page = await application.firstWindow();
     },
     listConfiguredAgents: () => evaluate(async () => { const status = await window.api.codingAgent.getStatus(); return status.installations.filter((item) => item.configured && item.version).map((item) => ({ kind: item.kind, version: item.version })); }),
     getFirstWorktreeId: async () => { const id = await evaluate(async () => (await window.api.worktrees.listAll())[0]?.id); if (!id) throw new Error("At least one worktree is required."); return id; },
@@ -47,6 +51,10 @@ export function createElectronCapabilitySmokeDriver(executablePath = process.env
     deactivateCapability: (runId, capabilityId) => evaluate((input) => window.api.capabilities.deactivate(input), { runId, capabilityId }),
     getSnapshot: (runId) => evaluate((id) => window.api.codingAgent.getSession({ runId: id }), runId),
     readProcessLogs: () => logs.join(""),
-    async close() { await application?.close(); application = undefined; page = undefined; },
+    async close() {
+      await application?.close(); application = undefined; page = undefined;
+      if (userDataDirectory) await rm(userDataDirectory, { recursive: true, force: true });
+      userDataDirectory = undefined;
+    },
   };
 }

@@ -23,6 +23,8 @@
     "rebuild": "electron-rebuild -f -w better-sqlite3 -w node-pty",
     "build:capability-host": "vite build --config vite.capability-host.config.ts",
     "build:capability-packages": "npm run build --workspace @agentic-worktrees/capability-sdk && npm run build --if-present --workspaces --include-workspace-root=false",
+    "package:capabilities": "npm run build --workspace @agentic-worktrees/capability-sdk && npm run build --workspace @agentic-worktrees/web-search",
+    "verify:capability-packages": "npm test -- scripts/package-contract/package-contract.test.ts",
     "smoke:capabilities": "node scripts/capability-smoke/run.mjs",
     "capability:create": "tsx scripts/capability-kit/cli.ts",
     "catalog:sign": "tsx scripts/catalog/sign-official-catalog.ts",

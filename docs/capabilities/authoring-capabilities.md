@@ -1,109 +1,76 @@
-# Authoring bundled capabilities
+# Authoring installable capabilities
 
-Agentic Worktrees capability SDK v0.1 is a deliberately small, provider-neutral contract for reviewed local capabilities. It supports metadata, compatibility, permissions, settings, optional secrets, and MCP tools. It does not support commands, events, renderer extensions, arbitrary package loading, or a public registry.
+Agentic Worktrees capabilities are npm packages containing reviewed static metadata and executable JavaScript. Installing one runs arbitrary code in the isolated Capability Host; a **Community** trust label is not an endorsement. Review the publisher, source, permissions, and package contents before accepting it. **Official** means the package and descriptor were verified by the signed Agentic Worktrees catalog, not that execution is risk-free.
 
-## 1. Create a workspace package
+## Package contract
 
-Use the repository-local starter kit:
-
-```bash
-npm run capability:create -- echo-text --tool echo_text
-npm install
-npm test -- capabilities/echo-text
-npm run typecheck
-```
-
-The command creates `capabilities/echo-text`, adds separate reviewed metadata and executable registry entries, and starts Codex/OpenCode compatibility as `unsupported`. Enable compatibility only after adapter verification. This local command neither installs third-party code nor publishes a package; it is not yet a public packaging interface.
-
-The generated package depends only on the local SDK:
+Create a package with exact metadata like this (substitute your scope and names):
 
 ```json
 {
-  "name": "@agentic-worktrees/echo-text-capability",
+  "name": "@example/echo-text",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
-  "exports": "./src/index.ts",
-  "dependencies": { "@agentic-worktrees/capability-sdk": "0.1.0" }
+  "main": "./dist/index.js",
+  "exports": "./dist/index.js",
+  "files": ["dist", "capability.json", "README.md", "LICENSE"],
+  "keywords": ["agentic-worktrees-capability"],
+  "agenticWorktrees": {
+    "kind": "capability",
+    "manifest": "./capability.json",
+    "entry": "./dist/index.js"
+  },
+  "publishConfig": { "access": "public" }
 }
 ```
 
-The root npm workspaces discover `capabilities/*`. Use `npm install`; never import Electron, database, renderer, or coding-agent modules from a capability. Narrowly scoped runtime dependencies may be added to the capability workspace only after review.
+Do not define `preinstall`, `install`, or `postinstall` lifecycle scripts. Agentic Worktrees acquires packages with lifecycle scripts disabled and rejects packages whose static contract is unsafe. Runtime dependencies must be bundled into `dist/index.js`: the installed entry is self-contained and must not import the SDK, source files, absolute paths, Electron, the renderer, database code, or coding-agent internals.
 
-## 2. Declare the reviewed surface
+## Static descriptor
 
-A manifest needs a stable lowercase dotted ID, semantic version, SDK range, verified Codex/OpenCode compatibility, publisher/license, and provenance where code was ported. Permissions state the maximum reviewed network hosts and secrets. Prefer exact lowercase hostnames. The reserved `public-web` permission is only for reviewed broad HTTP/HTTPS capabilities that enforce public destination classification, DNS pinning, and redirect revalidation equivalent to URL Fetch. Every secret setting must correspond to a declared kebab-case secret permission. A permission or version change creates a new consent digest.
+`capability.json` is read and validated **before executable import**. It contains the same manifest fields exported by the runtime entry:
 
-```ts
-const manifest = {
-  id: "agentic-worktrees.echo-text",
-  name: "Echo Text",
-  version: "0.1.0",
-  sdkVersion: "^0.1.0",
-  description: "Echo validated text.",
-  category: "utility",
-  author: { name: "Agentic Worktrees" },
-  license: "MIT",
-  compatibility: { codex: "supported", opencode: "supported" },
-  permissions: { network: [], secrets: [] },
-  settings: {},
-} as const;
+```json
+{
+  "id": "example.echo-text",
+  "name": "Echo Text",
+  "version": "0.1.0",
+  "sdkVersion": "^0.1.0",
+  "description": "Echo validated text.",
+  "category": "utility",
+  "author": { "name": "Example Publisher" },
+  "license": "MIT",
+  "compatibility": { "codex": "supported", "opencode": "supported" },
+  "permissions": { "network": [], "secrets": [] },
+  "settings": {}
+}
 ```
 
-## 3. Define one JSON-Schema tool
+IDs are stable lowercase dotted identifiers; tool names are lowercase snake case. Declare the maximum network hosts and kebab-case secret permissions. Compatibility may be marked supported only after packaged Codex and OpenCode verification. A version or permission change produces a new consent digest. Static/runtime ID, version, permissions, settings, compatibility, and tools must remain in parity; add a test that imports the built entry and compares it with the descriptor.
 
-```ts
-import { defineCapability, defineTool } from "@agentic-worktrees/capability-sdk";
+Capabilities use JSON-Schema tool inputs, honor `AbortSignal`, return bounded output, and emit stable errors. Inject transports for tests. Never log queries, fetched content, bearer headers, tokens, local managed paths, or decrypted secrets. Secret values are supplied by the main process from encrypted storage and must not be persisted by a capability.
 
-export default defineCapability({
-  manifest,
-  tools: [defineTool<{ text: string }>({
-    name: "echo_text",
-    description: "Echo text supplied by the coding agent.",
-    inputSchema: {
-      type: "object",
-      properties: { text: { type: "string", minLength: 1, maxLength: 2000 } },
-      required: ["text"],
-      additionalProperties: false,
-    },
-    async execute({ text }, context) {
-      if (context.signal.aborted) throw new DOMException("Aborted", "AbortError");
-      return { content: [{ type: "text", text }] };
-    },
-  })],
-});
-```
+## Local checks
 
-Tool names are lowercase snake case. Inputs are validated again in the utility host. Output is capped at 50 KiB and 2,000 lines. Honor `AbortSignal`, use stable `CapabilityError` codes, and return attributed source URLs for network-derived facts.
-
-## 4. Test without real services
-
-Inject `fetch` or another narrow transport dependency from a `createCapability({ fetchImpl })` factory. Test JSON and protocol variants, invalid input, cancellation, rate limits, malformed responses, and output bounds. Never put queries, results, bearer headers, API keys, endpoints, or decrypted values into logger fields or errors.
-
-Run offline verification:
+All tests below are local and must not require a registry, provider, credential, or public network:
 
 ```bash
-npm test -- capabilities/echo-text packages/capability-sdk
+npm run package:capabilities
+npm run verify:capability-packages
+npm pack --json --dry-run --workspace @example/echo-text
 npm run typecheck
 npm run lint
+npm test
 npm run build:capability-host
 npm run package
 ```
 
-## 5. Register for review
+Inspect the dry-run file list. It must include `package.json`, `capability.json`, README, license, and compiled entry; it must exclude source files, source maps, credentials, logs, databases, and build debris. Use a temporary pack destination for lifecycle tests and delete the tarball afterward.
 
-Add the immutable manifest to `src/main/capabilities/catalog.ts` and the executable definition to `src/main/capabilities/host-registry.ts`. These are separate reviews: renderer DTOs receive metadata only, while only the utility process can reach executable definitions. Do not resolve renderer-provided paths or third-party packages.
-
-Use an authenticated fake MCP client against a loopback port and verify: no active tools initially, activation exposes only `echo_text`, invalid bearer tokens receive 401, execution is bounded, and deactivation removes the tool.
-
-## 6. Optional real verification
-
-Package first with `npm run package`, set `AW_SMOKE_EXECUTABLE` to the packaged executable, and authenticate supported Codex 0.150.1+ and OpenCode 1.18.23+. Real compatibility checks are opt-in:
+The deterministic Web Search lifecycle tests begin with no installed package and exercise local tarball install, restart persistence, settings-preserving update, verifier rollback, safe removal, offline migration recovery, provider discovery, and redaction. The real provider smoke is separately opt-in:
 
 ```bash
-npm run smoke:capabilities
-npm run smoke:capabilities:web-search
-npm run smoke:capabilities:url-fetch
+AW_SMOKE_EXECUTABLE=/absolute/path/to/packaged/app npm run smoke:capabilities:web-search
 ```
 
-The Web Search scenario is keyless by default. `EXA_API_KEY` is optional and passes through the encrypted configuration path. Never commit environment files, credentials, logs, package output, databases, fetched pages, or fetched content.
+It requires already authenticated Codex 0.150.1+ and OpenCode 1.18.23+. It never initiates login. `EXA_API_KEY` is optional and must be provided only from the environment so the encrypted secret path can be checked. See [Publishing official capabilities](publishing-official-capabilities.md) for release readiness; ordinary development must not publish or sign catalog data.
