@@ -43,6 +43,14 @@
 - Every test-created lifecycle layout now exposes cleanup and removes its temporary directory in `finally`; success and forced-failure tests verify the directory no longer exists.
 - Verification: capability smoke 5 files/19 tests passed; package contracts 1 file/3 tests passed; direct Web Search smoke passed locally and explicitly skipped the real provider without an executable.
 
+## Final integration fix
+
+- Marketplace IPC registration no longer resolves Marketplace or Skill services eagerly. Legacy GitHub/auth IPC registration remains available without Marketplace configuration, while each Marketplace invocation still resolves its current configured services and maps unavailable dependencies to the operation's narrow, path-free package error code.
+- Added direct registration/invocation regressions for unavailable Marketplace services (`package_sync_failed`) and configured migration retry delegation.
+- Updated the main lifecycle harness for the extracted application bootstrap/service boundary. It now supplies the Electron single-instance port and a mock `ApplicationServices`, proving auth/window sequencing, safe startup failure observability, and exactly-once awaited service/capability shutdown alongside terminal and coding-agent shutdown.
+- RED reproduced: 2 files failed, 26 tests failed. GREEN focused: 2 files, 28 tests passed. Full suite: 165 files, 1196 tests passed.
+- `npm run typecheck` still reaches only the known unrelated `src/renderer/features/coding-agent/views/CodingAgentSession.tsx:387` missing `skillInvocations` Props diagnostic. `git diff --check` passed.
+
 ## Safety
 
 No npm publish, catalog signing, key generation, public network, real provider, credential, or persistent smoke user data was used. Generated package/build output is ignored and is not intended for staging.

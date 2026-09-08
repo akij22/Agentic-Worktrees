@@ -32,6 +32,9 @@ const mocks = vi.hoisted(() => {
     }),
     stopCapabilities: vi.fn(() => Promise.resolve()),
     stopTerminals: vi.fn(),
+    stopApplicationServices: vi.fn(async () => {
+      await mocks.stopCapabilities();
+    }),
     startupOrder: [] as string[],
     catalogRefresh: vi.fn(async () => {
       mocks.startupOrder.push("refresh");
@@ -64,11 +67,14 @@ vi.mock("electron", () => {
   return {
     app: {
       whenReady: vi.fn(() => mocks.ready),
+      requestSingleInstanceLock: vi.fn(() => true),
       on: vi.fn((event: string, listener: AppListener) => {
         mocks.listeners.set(event, listener);
       }),
+      removeListener: vi.fn(),
       quit: vi.fn(),
       getPath: vi.fn(() => "/tmp/agentic-worktrees-test"),
+      isPackaged: false,
     },
     BrowserWindow,
   };
@@ -78,10 +84,30 @@ vi.mock("./main/database", () => ({
   initDatabase: mocks.initDatabase,
 }));
 
+vi.mock("./main/application-services", () => ({
+  createApplicationServices: vi.fn(async () => {
+    await mocks.catalogRefresh();
+    await mocks.reconcileMigration();
+    mocks.startupOrder.push("host");
+    mocks.startupOrder.push("service");
+    return {
+      distributionService: {},
+      capabilityService: {
+        reconcileCapabilities: mocks.reconcileCapabilities,
+      },
+      skillService: {
+        reconcileSkills: vi.fn(() => Promise.resolve()),
+      },
+      stop: mocks.stopApplicationServices,
+    };
+  }),
+}));
+
 vi.mock("./main/ipc", () => ({
   registerIpcHandlers: mocks.registerIpcHandlers,
   configureCapabilityIpc: mocks.configureCapabilityIpc,
   configureSkillIpc: mocks.configureSkillIpc,
+  configureMarketplaceIpc: vi.fn(),
 }));
 
 vi.mock("./main/github/auth-service", () => ({
@@ -200,6 +226,7 @@ vi.mock("./main/workspace/workspace-terminal-service", () => ({
 }));
 
 const flushPromises = async (): Promise<void> => {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
   for (let index = 0; index < 8; index += 1) await Promise.resolve();
 };
 
@@ -255,6 +282,7 @@ it("stops terminals, capability hosts, and coding-agent harnesses before quittin
 
   expect(preventDefault).toHaveBeenCalledOnce();
   expect(mocks.stopTerminals).toHaveBeenCalledOnce();
+  expect(mocks.stopApplicationServices).toHaveBeenCalledOnce();
   expect(mocks.stopCapabilities).toHaveBeenCalledOnce();
   expect(mocks.stopCodingAgents).toHaveBeenCalledOnce();
 });
@@ -281,6 +309,7 @@ it("does not open DevTools in a packaged build", async () => {
   vi.stubGlobal("MAIN_WINDOW_VITE_DEV_SERVER_URL", undefined);
   vi.stubGlobal("MAIN_WINDOW_VITE_NAME", "main_window");
   await import("./main");
+  await flushPromises();
   const window = mocks.windows.at(-1) as
     { webContents: { openDevTools: ReturnType<typeof vi.fn> } } | undefined;
   expect(window?.webContents.openDevTools).not.toHaveBeenCalled();
