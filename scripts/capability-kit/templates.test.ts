@@ -26,15 +26,11 @@ describe("capability templates", () => {
     expect(files.get("src/manifest.ts")).toContain(
       'codex: "unsupported", opencode: "unsupported"',
     );
-    expect(files.get("src/manifest.ts")).toContain(
-      "network: [], secrets: []",
-    );
+    expect(files.get("src/manifest.ts")).toContain("network: [], secrets: []");
     expect(files.get("src/index.ts")).toContain("context.signal.aborted");
     expect(files.get("src/index.ts")).toContain(
       "Generated capability scaffold",
     );
-    expect(files.get("src/index.ts")).toContain(
-      "validateCapabilityDefinition",
-    );
+    expect(files.get("src/index.ts")).toContain("validateCapabilityDefinition");
   });
 });
