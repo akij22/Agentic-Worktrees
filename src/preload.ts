@@ -24,6 +24,11 @@ import {
 	workspaceTerminalCreateResponseSchema,
 	workspaceTerminalEventSchema,
 	skillChangedEventSchema,
+	marketplaceItemSchema,
+	capabilityPackageInspectionSchema,
+	capabilityRemovalInspectionSchema,
+	capabilityUpdateSchema,
+	capabilityDistributionProgressSchema,
 } from "./shared/ipc/schemas";
 import { skillDetailSchema, skillSummarySchema } from "./shared/skills/schemas";
 
@@ -234,6 +239,22 @@ const api: Api = {
 			const handler=(_event:Electron.IpcRendererEvent,payload:unknown)=>listener(skillChangedEventSchema.parse(payload));
 			ipcRenderer.on(IPC_CHANNELS.SKILL_CHANGED,handler);
 			return ()=>ipcRenderer.removeListener(IPC_CHANNELS.SKILL_CHANGED,handler);
+		},
+	},
+	marketplace: {
+		list: async () => marketplaceItemSchema.array().parse(await ipcRenderer.invoke(IPC_CHANNELS.MARKETPLACE_LIST, {})),
+		inspect: async (request) => capabilityPackageInspectionSchema.parse(await ipcRenderer.invoke(IPC_CHANNELS.MARKETPLACE_INSPECT, request)),
+		install: async (request) => capabilityDetailSchema.parse(await ipcRenderer.invoke(IPC_CHANNELS.MARKETPLACE_INSTALL, request)),
+		checkUpdates: async (request) => capabilityUpdateSchema.array().parse(await ipcRenderer.invoke(IPC_CHANNELS.MARKETPLACE_CHECK_UPDATES, request ?? {})),
+		update: async (request) => capabilityDetailSchema.parse(await ipcRenderer.invoke(IPC_CHANNELS.MARKETPLACE_UPDATE, request)),
+		inspectRemoval: async (request) => capabilityRemovalInspectionSchema.parse(await ipcRenderer.invoke(IPC_CHANNELS.MARKETPLACE_INSPECT_REMOVAL, request)),
+		remove: async (request) => { await ipcRenderer.invoke(IPC_CHANNELS.MARKETPLACE_REMOVE, request); },
+		cancel: async (request) => { await ipcRenderer.invoke(IPC_CHANNELS.MARKETPLACE_CANCEL, request); },
+		retryPendingMigrations: async () => { await ipcRenderer.invoke(IPC_CHANNELS.MARKETPLACE_RETRY_PENDING_MIGRATIONS, {}); },
+		onPackageChanged: (listener) => {
+			const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(capabilityDistributionProgressSchema.parse(payload));
+			ipcRenderer.on(IPC_CHANNELS.MARKETPLACE_PACKAGE_CHANGED, handler);
+			return () => ipcRenderer.removeListener(IPC_CHANNELS.MARKETPLACE_PACKAGE_CHANGED, handler);
 		},
 	},
 	capabilities: {

@@ -1,0 +1,1 @@
+DROP INDEX `managed_package_update_recoveries_package_name_unique`;

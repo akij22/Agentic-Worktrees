@@ -1,10 +1,22 @@
 import {
+	check,
 	index,
 	integer,
 	sqliteTable,
 	text,
 	uniqueIndex,
 } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
+import type {
+	ManagedPackageState,
+	PackageErrorCode,
+	PackageItemKind,
+	PackageOperationAction,
+	PackageOperationStage,
+	PackageOperationStatus,
+	PackageReviewStatus,
+	PackageTrust,
+} from "../packages/schemas";
 
 export const repositories = sqliteTable(
 	"repositories",
@@ -225,6 +237,66 @@ export const codingAgentSessionDiffs = sqliteTable(
 		),
 	}),
 );
+
+export const managedPackageInstallations = sqliteTable(
+	"managed_package_installations",
+	{
+		packageName: text("package_name").primaryKey(),
+		itemKind: text("item_kind").$type<PackageItemKind>().notNull(),
+		itemId: text("item_id").notNull(),
+		requestedSpec: text("requested_spec").notNull(),
+		activeVersion: text("active_version"),
+		activeIntegrity: text("active_integrity"),
+		activeContentDigest: text("active_content_digest"),
+		trust: text("trust").$type<PackageTrust>().notNull(),
+		reviewStatus: text("review_status").$type<PackageReviewStatus>().notNull(),
+		acceptedPermissionDigest: text("accepted_permission_digest"),
+		state: text("state").$type<ManagedPackageState>().notNull(),
+		errorCode: text("error_code").$type<PackageErrorCode>(),
+		createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+		updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+	},
+	(table) => ({
+		itemUnique: uniqueIndex("managed_package_installations_item_unique").on(table.itemKind, table.itemId),
+		activeMetadataCheck: check("managed_package_installations_active_metadata_check", sql`${table.state} = 'migration_pending' OR (${table.activeVersion} IS NOT NULL AND ${table.activeIntegrity} IS NOT NULL AND ${table.activeContentDigest} IS NOT NULL)`),
+	}),
+);
+
+export const managedPackageOperations = sqliteTable(
+	"managed_package_operations",
+	{
+		operationId: text("operation_id").primaryKey(),
+		action: text("action").$type<PackageOperationAction>().notNull(),
+		stage: text("stage").$type<PackageOperationStage>().notNull(),
+		status: text("status").$type<PackageOperationStatus>().notNull(),
+		packageName: text("package_name"),
+		requestedSpec: text("requested_spec").notNull(),
+		candidateVersion: text("candidate_version"),
+		candidateIntegrity: text("candidate_integrity"),
+		candidateContentDigest: text("candidate_content_digest"),
+		errorCode: text("error_code").$type<PackageErrorCode>(),
+		createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+		updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+	},
+	(table) => ({
+		statusIdx: index("managed_package_operations_status_idx").on(table.status),
+		stageIdx: index("managed_package_operations_stage_idx").on(table.stage),
+	}),
+);
+
+export const managedPackageRemovalRecoveries = sqliteTable("managed_package_removal_recoveries", {
+  operationId: text("operation_id").primaryKey(),
+  ownerToken: text("owner_token").notNull(),
+  packageName: text("package_name").notNull(),
+  snapshot: text("snapshot").notNull(),
+});
+
+export const managedPackageUpdateRecoveries = sqliteTable("managed_package_update_recoveries", {
+  operationId: text("operation_id").primaryKey(),
+  ownerToken: text("owner_token").notNull(),
+  packageName: text("package_name").notNull(),
+  snapshot: text("snapshot").notNull(),
+});
 
 export const capabilityInstallations = sqliteTable("capability_installations", {
 	capabilityId: text("capability_id").primaryKey(),

@@ -1,0 +1,19 @@
+import { describe, expect, it, vi } from "vitest";
+import { DisposableCapabilityPackageVerifier, type CapabilityVerifierUtilityProcess } from "./package-verifier";
+import type { InspectedCapabilityPackage } from "./package-inspector";
+
+const inspected = { staged: { operationId: "op", packageRoot: "/stage/package", packageJson: {}, contentDigest: "digest", requestedSpec: "example@1.0.0", packageName: "example", resolvedVersion: "1.0.0", integrity: "integrity" }, packageMetadata: { kind: "capability", manifest: "./capability.json", entry: "./index.js" }, descriptor: { manifest: { id: "example.cap", version: "1.0.0" }, tools: [] }, trust: "community", reviewStatus: "unreviewed", permissionDigest: "permission" } as unknown as InspectedCapabilityPackage;
+class FakeChild implements CapabilityVerifierUtilityProcess { message?: (value: unknown) => void; exit?: (code: number) => void; posted: unknown; kill = vi.fn(() => true); postMessage(value: unknown) { this.posted = value; } onMessage(listener: (value: unknown) => void) { this.message = listener; } onExit(listener: (code: number) => void) { this.exit = listener; } }
+function setup(timeoutMs = 20) { const child = new FakeChild(); const verifier = new DisposableCapabilityPackageVerifier({ launch: () => child, timeoutMs }); return { child, verifier }; }
+describe("DisposableCapabilityPackageVerifier", () => {
+  it("returns safe metadata and kills the utility", async () => { const { child, verifier } = setup(); const pending = verifier.verify(inspected, new AbortController().signal); const id = (child.posted as { requestId: string }).requestId; child.message?.({ type: "capability.verified", requestId: id, capabilityId: "example.cap", version: "1.0.0", toolNames: ["search"], contentDigest: "digest" }); await expect(pending).resolves.toEqual({ capabilityId: "example.cap", version: "1.0.0", toolNames: ["search"], contentDigest: "digest" }); expect(child.kill).toHaveBeenCalledOnce(); });
+  it("fails closed for malformed output, crash, timeout, mismatch and cancellation", async () => { let current = setup(); let pending = current.verifier.verify(inspected, new AbortController().signal); current.child.message?.({ nope: true }); await expect(pending).rejects.toThrow("malformed"); current = setup(); pending = current.verifier.verify(inspected, new AbortController().signal); current.child.exit?.(1); await expect(pending).rejects.toThrow("unexpectedly"); current = setup(1); await expect(current.verifier.verify(inspected, new AbortController().signal)).rejects.toThrow("timed out"); current = setup(); pending = current.verifier.verify(inspected, new AbortController().signal); current.child.message?.({ type: "capability.verified", requestId: (current.child.posted as { requestId: string }).requestId, capabilityId: "wrong", version: "1.0.0", toolNames: [], contentDigest: "digest" }); await expect(pending).rejects.toThrow("mismatch"); const controller = new AbortController(); current = setup(); pending = current.verifier.verify(inspected, controller.signal); controller.abort(); await expect(pending).rejects.toThrow(); expect(current.child.kill).toHaveBeenCalledOnce(); });
+  it.each(["listener", "postMessage"] as const)("kills the utility when %s setup throws", async failure => {
+    const child = new FakeChild();
+    if (failure === "listener") child.onExit = () => { throw new Error("listener exploded"); };
+    else child.postMessage = () => { throw new Error("post exploded"); };
+    const verifier = new DisposableCapabilityPackageVerifier({ launch: () => child });
+    await expect(verifier.verify(inspected, new AbortController().signal)).rejects.toThrow("setup failed");
+    expect(child.kill).toHaveBeenCalledOnce();
+  });
+});

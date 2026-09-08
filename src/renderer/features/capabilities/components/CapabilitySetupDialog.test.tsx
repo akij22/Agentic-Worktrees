@@ -7,7 +7,7 @@ import { CapabilitySetupDialog } from "./CapabilitySetupDialog";
 
 afterEach(cleanup);
 const webSearch: CapabilityDetailDto = {
-  id: "agentic-worktrees.web-search", name: "Web Search", version: "0.1.0", description: "Search", category: "web-browser", compatibility: { codex: "supported", opencode: "supported" }, state: "needs_setup", secretConfigured: true,
+  id: "agentic-worktrees.web-search", name: "Web Search", version: "0.1.0", description: "Search", category: "web-browser", compatibility: { codex: "supported", opencode: "supported" }, state: "needs_setup", secretConfigured: true, installationState: "needs_setup", source: "bundled", trust: "built-in", activeRunCount: 0,
   sdkVersion: "^0.1.0", author: { name: "Agentic Worktrees" }, license: "MIT", permissions: { network: ["api.exa.ai"], secrets: ["exa-api-key"] }, settings: [
     { key: "providerMode", type: "string", default: "auto", enum: ["auto"] }, { key: "resultLimit", type: "integer", default: 5, min: 1, max: 20 }, { key: "exaApiKey", type: "secret", required: false },
   ], reviewStatus: "bundled-reviewed", providedTools: ["web_search"], permissionDigest: "digest",

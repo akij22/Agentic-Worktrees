@@ -10,6 +10,7 @@ import { realpathSync, statSync } from "node:fs";
 import { IPC_CHANNELS } from "../../shared/ipc/channels";
 import {
 	capabilityChangedEventSchema,
+	capabilityDistributionProgressSchema,
 	codingAgentAccountUsageRequestSchema,
 	codingAgentModelsRequestSchema,
 	codingAgentPermissionResponseSchema,
@@ -109,6 +110,33 @@ import type { CapabilityService } from "../capabilities/capability-service";
 import { createCapabilityHandlers } from "./capability-handlers";
 import type { SkillService } from "../skills/skill-service";
 import { createSkillHandlers } from "./skill-handlers";
+import type { CapabilityDistributionService } from "../capabilities/capability-distribution-service";
+import { createMarketplaceHandlers } from "./marketplace-handlers";
+import { MarketplaceEventSubscription } from "./marketplace-event-subscription";
+
+let marketplaceDistribution: CapabilityDistributionService | null = null;
+const marketplaceEvents = new MarketplaceEventSubscription();
+export const configureMarketplaceIpc = (service: CapabilityDistributionService | null): void => {
+	marketplaceDistribution = service;
+	marketplaceEvents.configure(service, (event) => {
+		if (!service || marketplaceDistribution !== service) return;
+		try {
+			const publicEvent = capabilityDistributionProgressSchema.parse(event);
+			for (const window of BrowserWindow.getAllWindows()) window.webContents.send(IPC_CHANNELS.MARKETPLACE_PACKAGE_CHANGED, publicEvent);
+			if (publicEvent.status === "completed" && publicEvent.capabilityId && ["install", "update", "remove"].includes(publicEvent.action)) {
+				const catalogEvent = capabilityChangedEventSchema.parse({
+				scope: "catalog",
+				capabilityId: publicEvent.capabilityId,
+				change: publicEvent.action === "install" ? "installed" : publicEvent.action === "update" ? "updated" : "removed",
+				updatedAt: publicEvent.updatedAt,
+			});
+				for (const window of BrowserWindow.getAllWindows()) window.webContents.send(IPC_CHANNELS.CAPABILITY_CHANGED, catalogEvent);
+			}
+		} catch {
+			console.error("marketplace_event_invalid");
+		}
+	});
+};
 
 let skillService: SkillService | null = null;
 export const configureSkillIpc = (service:SkillService|null):void => { skillService=service; };
@@ -423,6 +451,10 @@ const handleWorkspaceGitOpenPullRequest = async (
 };
 
 const capabilityHandlers = () => createCapabilityHandlers(requireCapabilityService());
+const requireMarketplaceDistribution = (): CapabilityDistributionService => {
+	if (!marketplaceDistribution) throw new Error("Marketplace service is unavailable.");
+	return marketplaceDistribution;
+};
 const handleCapabilityList = (_event: IpcMainInvokeEvent, rawRequest: unknown) => capabilityHandlers().list(rawRequest);
 const handleCapabilityGet = (_event: IpcMainInvokeEvent, rawRequest: unknown) => capabilityHandlers().get(rawRequest);
 const handleCapabilityConfigure = (_event: IpcMainInvokeEvent, rawRequest: unknown) => capabilityHandlers().configure(rawRequest);
@@ -649,16 +681,43 @@ const handleIntelligenceIntegrationOpen = async (
 	await openEditor(request.editorId, session.integrationPath);
 };
 
+type MarketplaceHandlerName = Exclude<keyof ReturnType<typeof createMarketplaceHandlers>, "event">;
+const invokeMarketplace = (
+	name: MarketplaceHandlerName,
+	raw: unknown,
+	unavailableCode: string,
+): unknown => {
+	try {
+		return createMarketplaceHandlers(
+			requireMarketplaceDistribution(),
+			requireSkillService(),
+		)[name](raw);
+	} catch {
+		const error = Object.assign(new Error(unavailableCode), { code: unavailableCode });
+		error.stack = undefined;
+		return Promise.reject(Object.freeze(error));
+	}
+};
+
 export const registerIpcHandlers = (): void => {
-	ipcMain.handle(IPC_CHANNELS.SKILL_LIST,requireAuthenticated(()=>skillHandlers().list()));
-	ipcMain.handle(IPC_CHANNELS.SKILL_GET,requireAuthenticated((_event,raw)=>skillHandlers().get(raw)));
-	ipcMain.handle(IPC_CHANNELS.SKILL_INSTALL,requireAuthenticated((_event,raw)=>skillHandlers().install(raw)));
-	ipcMain.handle(IPC_CHANNELS.SKILL_REMOVE,requireAuthenticated((_event,raw)=>skillHandlers().remove(raw)));
-	ipcMain.handle(IPC_CHANNELS.CAPABILITY_LIST, requireAuthenticated(handleCapabilityList));
-	ipcMain.handle(IPC_CHANNELS.CAPABILITY_GET, requireAuthenticated(handleCapabilityGet));
-	ipcMain.handle(IPC_CHANNELS.CAPABILITY_CONFIGURE, requireAuthenticated(handleCapabilityConfigure));
-	ipcMain.handle(IPC_CHANNELS.CAPABILITY_ACTIVATE, requireAuthenticated(handleCapabilityActivate));
-	ipcMain.handle(IPC_CHANNELS.CAPABILITY_DEACTIVATE, requireAuthenticated(handleCapabilityDeactivate));
+	ipcMain.handle(IPC_CHANNELS.SKILL_LIST,()=>skillHandlers().list());
+	ipcMain.handle(IPC_CHANNELS.SKILL_GET,(_event,raw)=>skillHandlers().get(raw));
+	ipcMain.handle(IPC_CHANNELS.SKILL_INSTALL,(_event,raw)=>skillHandlers().install(raw));
+	ipcMain.handle(IPC_CHANNELS.SKILL_REMOVE,(_event,raw)=>skillHandlers().remove(raw));
+	ipcMain.handle(IPC_CHANNELS.CAPABILITY_LIST, handleCapabilityList);
+	ipcMain.handle(IPC_CHANNELS.CAPABILITY_GET, handleCapabilityGet);
+	ipcMain.handle(IPC_CHANNELS.CAPABILITY_CONFIGURE, handleCapabilityConfigure);
+	ipcMain.handle(IPC_CHANNELS.CAPABILITY_ACTIVATE, handleCapabilityActivate);
+	ipcMain.handle(IPC_CHANNELS.CAPABILITY_DEACTIVATE, handleCapabilityDeactivate);
+	ipcMain.handle(IPC_CHANNELS.MARKETPLACE_LIST, (_event, raw) => invokeMarketplace("list", raw, "package_sync_failed"));
+	ipcMain.handle(IPC_CHANNELS.MARKETPLACE_INSPECT, (_event, raw) => invokeMarketplace("inspect", raw, "package_source_invalid"));
+	ipcMain.handle(IPC_CHANNELS.MARKETPLACE_INSTALL, (_event, raw) => invokeMarketplace("install", raw, "package_install_failed"));
+	ipcMain.handle(IPC_CHANNELS.MARKETPLACE_CHECK_UPDATES, (_event, raw) => invokeMarketplace("checkUpdates", raw, "package_download_failed"));
+	ipcMain.handle(IPC_CHANNELS.MARKETPLACE_UPDATE, (_event, raw) => invokeMarketplace("update", raw, "package_update_failed"));
+	ipcMain.handle(IPC_CHANNELS.MARKETPLACE_INSPECT_REMOVAL, (_event, raw) => invokeMarketplace("inspectRemoval", raw, "package_remove_failed"));
+	ipcMain.handle(IPC_CHANNELS.MARKETPLACE_REMOVE, (_event, raw) => invokeMarketplace("remove", raw, "package_remove_failed"));
+	ipcMain.handle(IPC_CHANNELS.MARKETPLACE_CANCEL, (_event, raw) => invokeMarketplace("cancel", raw, "package_sync_failed"));
+	ipcMain.handle(IPC_CHANNELS.MARKETPLACE_RETRY_PENDING_MIGRATIONS, (_event, raw) => invokeMarketplace("retryPendingMigrations", raw, "package_sync_failed"));
 	ipcMain.handle(IPC_CHANNELS.GITHUB_AUTH_STATUS, () =>
 		authStatusResponse(() => githubAuthService.getStatus()),
 	);

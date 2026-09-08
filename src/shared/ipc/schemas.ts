@@ -1,6 +1,47 @@
 import { z } from "zod";
 import type { Repository, Worktree } from "../db/schema";
 import { codingAgentTurnRequestSchema, skillDetailSchema, skillIdSchema, skillSummarySchema } from "../skills/schemas";
+import {
+	capabilityDetailSchema,
+	capabilityStateSchema,
+	capabilitySummarySchema,
+} from "../capabilities/schemas";
+export { capabilityDetailSchema, capabilityStateSchema, capabilitySummarySchema } from "../capabilities/schemas";
+export type { CapabilityDetailDto, CapabilityStateDto, CapabilitySummaryDto } from "../capabilities/schemas";
+import {
+	packageInspectRequestSchema,
+	packageInstallRequestSchema,
+	packageUpdateRequestSchema,
+	packageRemoveRequestSchema,
+	packageRemovalInspectRequestSchema,
+	capabilityRemovalInspectionSchema,
+	capabilityPackageInspectionSchema,
+	packageNameSchema,
+	capabilityUpdateSchema,
+	capabilityDistributionProgressSchema,
+} from "../packages/schemas";
+export {
+	packageInspectRequestSchema,
+	packageInstallRequestSchema,
+	packageUpdateRequestSchema,
+	packageRemoveRequestSchema,
+	packageRemovalInspectRequestSchema,
+	capabilityRemovalInspectionSchema,
+	capabilityPackageInspectionSchema,
+	capabilityUpdateSchema,
+	capabilityDistributionProgressSchema,
+};
+export type {
+	PackageInspectRequest,
+	PackageInstallRequest,
+	PackageUpdateRequest,
+	PackageRemoveRequest,
+	PackageRemovalInspectRequest,
+	CapabilityRemovalInspection,
+	CapabilityPackageInspectionDto,
+	CapabilityUpdateDto,
+	CapabilityDistributionProgress,
+} from "../packages/schemas";
 
 export const githubAuthStateSchema = z.enum([
 	"loading",
@@ -849,47 +890,6 @@ export type WorktreeCreateResponse = z.infer<
 export type WorktreeListRequest = z.infer<typeof worktreeListRequestSchema>;
 
 
-export const capabilityStateSchema = z.enum([
-	"available",
-	"needs_setup",
-	"ready",
-	"pending_activation",
-	"reloading",
-	"active",
-	"pending_deactivation",
-	"activation_failed",
-	"inactive",
-	"unavailable",
-]);
-export type CapabilityStateDto = z.infer<typeof capabilityStateSchema>;
-
-const capabilityCompatibilitySchema = z.object({
-	codex: z.enum(["supported", "unsupported"]),
-	opencode: z.enum(["supported", "unsupported"]),
-});
-
-export const capabilitySummarySchema = z.object({
-	id: z.string().regex(/^[a-z0-9]+(?:[.-][a-z0-9]+)*$/),
-	name: z.string(),
-	version: z.string(),
-	description: z.string(),
-	category: z.string(),
-	compatibility: capabilityCompatibilitySchema,
-	state: capabilityStateSchema,
-	secretConfigured: z.boolean(),
-});
-export type CapabilitySummaryDto = z.infer<typeof capabilitySummarySchema>;
-
-const capabilitySettingDetailSchema = z.object({
-	key: z.string(),
-	type: z.enum(["string", "integer", "boolean", "secret"]),
-	required: z.boolean().optional(),
-	default: z.union([z.string(), z.number(), z.boolean()]).optional(),
-	enum: z.array(z.string()).optional(),
-	min: z.number().optional(),
-	max: z.number().optional(),
-});
-
 export const skillListResponseSchema = skillSummarySchema.array();
 export const skillGetRequestSchema = z.object({ skillId: skillIdSchema }).strict();
 export const skillInstallRequestSchema = z.object({}).strict();
@@ -906,23 +906,6 @@ export const marketplaceItemSchema = z.union([
 ]);
 export type MarketplaceItemDto = z.infer<typeof marketplaceItemSchema>;
 export { skillDetailSchema, skillSummarySchema };
-
-export const capabilityDetailSchema = capabilitySummarySchema.extend({
-	sdkVersion: z.string(),
-	author: z.object({ name: z.string(), url: z.string().url().optional() }),
-	license: z.string(),
-	provenance: z.object({
-		kind: z.string(), source: z.string(), package: z.string(),
-		sourceVersion: z.string(), repository: z.string().url(),
-	}).optional(),
-	permissions: z.object({ network: z.array(z.string()), secrets: z.array(z.string()) }),
-	settings: z.array(capabilitySettingDetailSchema),
-	reviewStatus: z.literal("bundled-reviewed"),
-	providedTools: z.array(z.string()),
-	permissionDigest: z.string(),
-	warningCode: z.enum(["upstream_unavailable"]).optional(),
-});
-export type CapabilityDetailDto = z.infer<typeof capabilityDetailSchema>;
 
 export const capabilitySessionStateSchema = z.object({
 	runId: z.string().min(1),
@@ -954,8 +937,16 @@ export const capabilityConfigureRequestSchema = z.object({
 });
 export const capabilityActivateRequestSchema = z.object({ runId: z.string().trim().min(1), capabilityId: capabilityIdSchema });
 export const capabilityDeactivateRequestSchema = capabilityActivateRequestSchema;
-export const capabilityChangedEventSchema = capabilitySessionStateSchema.extend({ updatedAt: z.string() });
+export const capabilityChangedEventSchema = z.discriminatedUnion("scope", [
+	z.object({ scope: z.literal("session"), runId: z.string().trim().min(1), capabilityId: capabilityIdSchema, state: capabilityStateSchema, updatedAt: z.string().datetime() }).strict(),
+	z.object({ scope: z.literal("catalog"), capabilityId: capabilityIdSchema, change: z.enum(["installed", "updated", "removed", "blocked"]), updatedAt: z.string().datetime() }).strict(),
+]);
 export type CapabilityChangedEventDto = z.infer<typeof capabilityChangedEventSchema>;
+
+export const marketplaceListRequestSchema = z.object({}).strict();
+export const marketplaceCheckUpdatesRequestSchema = z.object({ packageName: packageNameSchema.optional() });
+export const marketplaceCancelRequestSchema = z.object({ operationId: z.string().trim().min(1) }).strict();
+export const marketplaceRetryMigrationsRequestSchema = z.object({}).strict();
 export type CapabilityConfigureRequest = z.infer<typeof capabilityConfigureRequestSchema>;
 export type CapabilityActivateRequest = z.infer<typeof capabilityActivateRequestSchema>;
 export type CapabilityDeactivateRequest = z.infer<typeof capabilityDeactivateRequestSchema>;

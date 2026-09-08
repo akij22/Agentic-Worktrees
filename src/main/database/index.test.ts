@@ -48,6 +48,29 @@ describe("database upgrades", () => {
 		]);
 	});
 
+	it("bootstraps managed package lifecycle tables and indexes", () => {
+		sqlite.exec(bootstrapSchemaSql);
+		const tables = sqlite.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'managed_package_%' ORDER BY name`).all() as Array<{ name: string }>;
+		expect(tables.map(({ name }) => name)).toEqual([
+			"managed_package_installations",
+			"managed_package_operations",
+			"managed_package_removal_recoveries",
+			"managed_package_update_recoveries",
+		]);
+		const indexes = sqlite.prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'managed_package_%' ORDER BY name`).all() as Array<{ name: string }>;
+		expect(indexes.map(({ name }) => name)).toEqual(expect.arrayContaining([
+			"managed_package_installations_item_unique",
+			"managed_package_operations_stage_idx",
+			"managed_package_operations_status_idx",
+		]));
+	});
+
+	it("adds managed package tables to databases that predate migrations", () => {
+		sqlite.exec("CREATE TABLE worktrees (id TEXT PRIMARY KEY NOT NULL)");
+		applyDatabaseUpgrades(sqlite);
+		expect(sqlite.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'managed_package_installations'`).get()).toEqual({ name: "managed_package_installations" });
+	});
+
 	it("adds last_viewed_at to an existing coding-agent session table", () => {
 		sqlite.exec(`
       CREATE TABLE coding_agent_sessions (

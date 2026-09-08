@@ -129,7 +129,11 @@ vi.mock("../conflicts", () => ({
 	},
 }));
 
-import { registerIpcHandlers } from "./index";
+import {
+	configureMarketplaceIpc,
+	configureSkillIpc,
+	registerIpcHandlers,
+} from "./index";
 
 const authChannels = [
 	IPC_CHANNELS.GITHUB_AUTH_STATUS,
@@ -156,13 +160,32 @@ describe("GitHub authentication IPC handlers", () => {
 		vi.clearAllMocks();
 		mocks.windows.length = 0;
 		mocks.assertAuthenticated.mockResolvedValue(undefined);
+		configureMarketplaceIpc(null);
+		configureSkillIpc(null);
 		registerIpcHandlers();
 	});
 
-	it("registers every authentication channel", () => {
+	it("registers legacy and Marketplace channels without Marketplace services", async () => {
 		expect(authChannels.every((channel) => mocks.handlers.has(channel))).toBe(
 			true,
 		);
+		expect(mocks.handlers.has(IPC_CHANNELS.MARKETPLACE_LIST)).toBe(true);
+		await expect(invoke(IPC_CHANNELS.MARKETPLACE_LIST, {})).rejects.toMatchObject({
+			message: "package_sync_failed",
+			code: "package_sync_failed",
+			stack: undefined,
+		});
+	});
+
+	it("resolves configured Marketplace services only when a handler is invoked", async () => {
+		const retryPendingMigrations = vi.fn().mockResolvedValue(undefined);
+		configureMarketplaceIpc({ retryPendingMigrations } as never);
+		configureSkillIpc({} as never);
+
+		await expect(
+			invoke(IPC_CHANNELS.MARKETPLACE_RETRY_PENDING_MIGRATIONS, {}),
+		).resolves.toBeUndefined();
+		expect(retryPendingMigrations).toHaveBeenCalledOnce();
 	});
 
 	it.each([

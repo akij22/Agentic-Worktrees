@@ -64,6 +64,12 @@
   - Analyze TypeScript, TSX, JavaScript, and JSX at symbol level; other file types receive file and module analysis.
   - Preserve the latest successful intelligence snapshot and an auditable preparation history. Intelligence does not use AI conflict guesses or fabricate execution progress.
 
+- **Capability Marketplace and CLI**
+  - Browse installable capabilities in the Marketplace, review publisher trust and requested permissions before executable import, and explicitly configure or activate an installed capability.
+  - Treat Community packages as arbitrary third-party code; the Community label is not an endorsement. Official packages are authenticated by the signed catalog but still execute only in the isolated Capability Host.
+  - Install, update, list, and safely remove managed npm capabilities through the same transactional backend from either the Marketplace or packaged executable CLI.
+  - Keep newly installed capabilities inactive in existing chats until explicitly activated, and retain an offline-safe signed-catalog fallback.
+
 - **Desktop workspace**
   - Use a dense dashboard designed around repository and worktree workflows.
   - Resize the dashboard sidebar and switch between light and dark themes.
@@ -179,6 +185,17 @@ Database migrations are initialized by the application. When database schema def
 10. From **Review**, create a commit for all current changes and push unpublished commits. For GitHub-linked repositories, open a non-draft pull request after the branch has been pushed.
 11. Approve or reject interactive permission requests, and use the stop action to abort a running session. Codex uses `workspace-write` with `on-request` approvals by default.
 12. Open **Intelligence**, select a repository, and refresh its local analysis. Review overlaps or predicted conflicts in **Attention**, select a target branch, and choose **Confirm with Git**. Safe pairs leave Attention; Review Required and Conflict results retain an isolated Integration Worktree that can be opened in an installed editor. Original worktrees remain unchanged.
-13. Use **Settings** to sign out of GitHub or select/change either local coding-agent executable. Codex reuses the authentication and configuration of the selected local CLI; the application does not request separate Codex credentials.
+13. Open **Marketplace** to inspect a capability's publisher, trust label, version, permissions, release notes, and compatibility. Installation never activates a capability automatically; enable it explicitly from a chat's Capability picker after configuration.
+14. The packaged executable exposes equivalent package commands (review and confirmation prompts are shown when required):
+
+    ```text
+    agentic-worktrees install @agentic-worktrees/web-search
+    agentic-worktrees list
+    agentic-worktrees update @agentic-worktrees/web-search
+    agentic-worktrees remove @agentic-worktrees/web-search
+    ```
+
+    These commands use local application state and do not require GitHub authentication. Community npm packages execute arbitrary code in the isolated Capability Host, so verify the publisher and requested permissions before accepting.
+15. Use **Settings** to sign out of GitHub or select/change either local coding-agent executable. Codex reuses the authentication and configuration of the selected local CLI; the application does not request separate Codex credentials.
 
 The application stores its local database and encrypted credentials in Electron's application data directory. Keep the worktree workspace path backed up if the local worktree metadata is important to your workflow.

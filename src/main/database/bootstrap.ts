@@ -1,3 +1,32 @@
+export const managedPackageSchemaStatements = [
+  `CREATE TABLE IF NOT EXISTS managed_package_removal_recoveries (
+    operation_id TEXT PRIMARY KEY NOT NULL, owner_token TEXT NOT NULL,
+    package_name TEXT NOT NULL, snapshot TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS managed_package_update_recoveries (
+    operation_id TEXT PRIMARY KEY NOT NULL, owner_token TEXT NOT NULL,
+    package_name TEXT NOT NULL, snapshot TEXT NOT NULL
+  )`,
+	`CREATE TABLE IF NOT EXISTS managed_package_installations (
+		package_name TEXT PRIMARY KEY NOT NULL, item_kind TEXT NOT NULL, item_id TEXT NOT NULL,
+		requested_spec TEXT NOT NULL, active_version TEXT, active_integrity TEXT,
+		active_content_digest TEXT, trust TEXT NOT NULL, review_status TEXT NOT NULL,
+		accepted_permission_digest TEXT, state TEXT NOT NULL, error_code TEXT,
+		created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+		CONSTRAINT managed_package_installations_active_metadata_check CHECK
+		(state = 'migration_pending' OR (active_version IS NOT NULL AND active_integrity IS NOT NULL AND active_content_digest IS NOT NULL))
+	)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS managed_package_installations_item_unique ON managed_package_installations (item_kind, item_id)`,
+	`CREATE TABLE IF NOT EXISTS managed_package_operations (
+		operation_id TEXT PRIMARY KEY NOT NULL, action TEXT NOT NULL, stage TEXT NOT NULL,
+		status TEXT NOT NULL, package_name TEXT, requested_spec TEXT NOT NULL,
+		candidate_version TEXT, candidate_integrity TEXT, candidate_content_digest TEXT,
+		error_code TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS managed_package_operations_status_idx ON managed_package_operations (status)`,
+	`CREATE INDEX IF NOT EXISTS managed_package_operations_stage_idx ON managed_package_operations (stage)`,
+] as const;
+
 const bootstrapStatements = [
 	`
     CREATE TABLE IF NOT EXISTS repositories (
@@ -530,6 +559,7 @@ const bootstrapStatements = [
     )`,
 	`CREATE INDEX IF NOT EXISTS skill_invocations_run_id_idx ON skill_invocations (run_id)`,
 	`CREATE INDEX IF NOT EXISTS skill_invocations_skill_id_idx ON skill_invocations (skill_id)`,
+	...managedPackageSchemaStatements,
 ] as const;
 
 export const bootstrapSchemaSql = bootstrapStatements.join(";\n");

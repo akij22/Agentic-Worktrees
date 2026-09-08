@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { defineCapability, defineTool, validateCapabilityDefinition } from "./index";
+import { CapabilityError, defineCapability, defineTool, staticDescriptorFromDefinition, validateCapabilityDefinition, validateCapabilityManifest, validateCapabilityStaticDescriptor } from "./index";
+
+function expectCapabilityError(action: () => unknown, code: "invalid_input" | "permission_denied"): void {
+  try {
+    action();
+    throw new Error("Expected CapabilityError.");
+  } catch (error) {
+    expect(error).toBeInstanceOf(CapabilityError);
+    expect((error as CapabilityError).code).toBe(code);
+  }
+}
 
 const manifest = {
   id: "example.echo",
@@ -33,6 +43,78 @@ describe("capability schema", () => {
       expect(() => validateCapabilityDefinition(defineCapability({ manifest: { ...manifest, permissions: { network: [permission], secrets: [] } }, tools: [] }))).toThrow("network permission");
     }
     expect(() => validateCapabilityDefinition(defineCapability({ manifest: { ...manifest, permissions: { network: ["example.com", "example.com"], secrets: [] } }, tools: [] }))).toThrow("network permission");
+  });
+
+  it("validates and freezes unknown static descriptors", () => {
+    const descriptor = {
+      manifest,
+      tools: [{ name: "echo_text", description: "Echo", inputSchema: { type: "object", properties: {}, additionalProperties: false } }],
+    };
+    const validated = validateCapabilityStaticDescriptor(descriptor);
+    expect(validated).toMatchObject({ manifest: { id: "example.echo" }, tools: [{ name: "echo_text" }] });
+    expect(Object.isFrozen(validated)).toBe(true);
+    expect(Object.isFrozen(validated.tools[0]?.inputSchema)).toBe(true);
+    expect(() => validateCapabilityStaticDescriptor({ manifest: null, tools: [] })).toThrow(CapabilityError);
+    expect(() => validateCapabilityStaticDescriptor({ ...descriptor, extra: true })).toThrow("Unknown descriptor");
+    expect(() => validateCapabilityStaticDescriptor({ ...descriptor, tools: [{ ...descriptor.tools[0], name: "Bad Tool" }] })).toThrow("Invalid tool name");
+    expect(() => validateCapabilityStaticDescriptor({ ...descriptor, tools: [descriptor.tools[0], descriptor.tools[0]] })).toThrow("Duplicate tool");
+    expect(() => validateCapabilityStaticDescriptor({ ...descriptor, tools: Array.from({ length: 101 }, (_, index) => ({ ...descriptor.tools[0], name: `tool_${index}` })) })).toThrow("Invalid capability tools");
+  });
+
+  it("rejects invalid static metadata with normalized capability error codes", () => {
+    const descriptor = {
+      manifest,
+      tools: [{ name: "echo_text", description: "Echo", inputSchema: { type: "object" } }],
+    };
+    expectCapabilityError(() => validateCapabilityStaticDescriptor({ ...descriptor, tools: [{ ...descriptor.tools[0], inputSchema: { type: "unknown" } }] }), "invalid_input");
+    expectCapabilityError(() => validateCapabilityStaticDescriptor({ ...descriptor, manifest: { ...manifest, permissions: { network: ["example.com", "example.com"], secrets: [] } } }), "invalid_input");
+    expectCapabilityError(() => validateCapabilityStaticDescriptor({ ...descriptor, manifest: { ...manifest, settings: { token: { type: "secret", required: false } } } }), "permission_denied");
+  });
+
+  it("rejects every non-JSON schema value before cloning or Ajv compilation", () => {
+    const invalidValues: unknown[] = [
+      undefined,
+      () => undefined,
+      new Date(),
+      new Map(),
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Symbol("schema"),
+      new (class SchemaValue { readonly type = "string"; })(),
+    ];
+    const cyclic: Record<string, unknown> = { type: "object" };
+    cyclic.self = cyclic;
+    invalidValues.push(cyclic);
+
+    for (const invalidValue of invalidValues) {
+      expectCapabilityError(() => validateCapabilityStaticDescriptor({
+        manifest,
+        tools: [{ name: "echo_text", description: "Echo", inputSchema: { type: "object", invalidValue } }],
+      }), "invalid_input");
+    }
+  });
+
+  it("returns detached recursively frozen manifests and descriptors", () => {
+    const inputManifest = structuredClone(manifest);
+    const validatedManifest = validateCapabilityManifest(inputManifest);
+    expect(validatedManifest).not.toBe(inputManifest);
+    expect(Object.isFrozen(validatedManifest)).toBe(true);
+    expect(Object.isFrozen(validatedManifest.author)).toBe(true);
+    inputManifest.author.name = "Changed";
+    expect(validatedManifest.author.name).toBe("Test");
+
+    const inputSchema = { type: "object", properties: { text: { type: "string" } } };
+    const validated = validateCapabilityStaticDescriptor({ manifest, tools: [{ name: "echo_text", description: "Echo", inputSchema }] });
+    expect(Object.isFrozen(validated.manifest.settings)).toBe(true);
+    expect(Object.isFrozen(validated.tools)).toBe(true);
+    expect(Object.isFrozen(validated.tools[0]?.inputSchema.properties)).toBe(true);
+    inputSchema.properties.text.type = "number";
+    expect(validated.tools[0]?.inputSchema).toMatchObject({ properties: { text: { type: "string" } } });
+  });
+
+  it("projects executable definitions through the static validator", () => {
+    const definition = defineCapability({ manifest, tools: [defineTool({ name: "echo_text", description: "Echo", inputSchema: { type: "object" }, execute: async () => ({ content: [] }) })] });
+    expect(staticDescriptorFromDefinition(definition)).toEqual({ manifest, tools: [{ name: "echo_text", description: "Echo", inputSchema: { type: "object" } }] });
   });
 
   it("rejects duplicate names, invalid schemas, compatibility, and undeclared secrets", () => {

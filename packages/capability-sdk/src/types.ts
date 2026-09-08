@@ -63,3 +63,14 @@ export interface CapabilityDefinition {
   manifest: CapabilityManifest;
   tools: readonly CapabilityTool<unknown>[];
 }
+
+export interface CapabilityStaticTool {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+export interface CapabilityStaticDescriptor {
+  manifest: CapabilityManifest;
+  tools: readonly CapabilityStaticTool[];
+}

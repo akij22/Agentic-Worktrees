@@ -1,0 +1,389 @@
+# Task 7 report
+
+## Task 7B0 — cross-call consent lease under PackageLock
+
+`ConsentLeaseRegistry` starts one observed `PackageLock.runExclusive()` owner promise per operation. Readiness is independently published after static acquisition/inspection, while the owner callback remains suspended under the same lock until one terminal command wins.
+
+```text
+START -> ACQUIRING (lock owner entered)
+  | acquisition/static failure -> CLEANUP -> FAILED -> RELEASED/REMOVED
+  v
+AWAITING_CONSENT (immutable ready DTO published; 15-minute timer armed)
+  | accept -----------------> HEALTH CHECK -> VERIFY+COMMIT -> CLEANUP -> COMPLETED
+  | cancel -------------------------------> CLEANUP -> CANCELLED
+  | deterministic expiry ----------------> CLEANUP -> EXPIRED
+  | lock compromised + accept -> HEALTH CHECK FAIL -> CLEANUP -> FAILED
+All terminal paths clear the timer, release the owner-bound lock, and remove the registry entry.
+```
+
+### Direct requirement evidence
+
+| Requirement | Direct test |
+|---|---|
+| Readiness resolves before release and lock remains held | `publishes immutable readiness before release and holds the lock awaiting consent` |
+| Accept verifies/commits before release and returns result | `accepts once, commits inside the owner callback, cleans once, and releases afterward` |
+| Cancel skips callback, cleans once, releases, clears timer | `cancel skips commit, cleans once, releases, and clears its timer` |
+| Exact deterministic 15-minute expiry | `expires deterministically after exactly 15 minutes without commit` |
+| Acquisition failure is safe and cleaned | `maps acquisition failure to a fully sanitized error and cleans owned staging once` |
+| Static inspection failure after acquisition is safe and cleaned | `sanitizes a static inspection failure after acquisition and releases all owned resources` |
+| Lock acquisition failure does not clean unowned staging | `maps lock acquisition failure without cleaning an unowned staging path or retaining its cause` |
+| Duplicate/late commands cannot commit twice | `rejects duplicate and late terminal commands and never commits twice` |
+| Accept/cancel and accept/expiry races have one winner | `gives accept-vs-cancel and accept-vs-expiry races exactly one winner` |
+| Compromised owner prevents post-consent commit | `prevents commit when the owner lock is compromised before acceptance` |
+| Commit failure exposes no raw cause, secret, or path | `sanitizes commit failures without exposing their cause` |
+| Registry removes terminal operations/rejects unknown IDs | `removes terminal workflows and rejects unknown operation IDs` |
+| Global serialization spans cross-call consent wait | `keeps a second workflow out of acquisition while the first awaits consent` |
+| No terminal timers/listeners and owner rejection observed | cancel/expiry tests assert zero scheduler handles; implementation attaches rejection observers to both owner and readiness promises |
+
+### 7B0 RED/GREEN evidence
+
+- RED: focused Vitest suite failed to import missing `./consent-lease-registry`.
+- GREEN (fix round 1): `npm test -- --run src/main/capabilities/consent-lease-registry.test.ts src/main/packages/package-lock.test.ts` — **2 files passed, 20 tests passed**.
+- `LeaseError` owns only stable `name`, `message`, and `code` data (plus the runtime-created local stack); raw causes are never retained. Acquisition, static-inspection, lock, and commit tests inspect `Reflect.ownKeys`, `.cause`, stack, JSON, and all reflected values for injected secrets and paths.
+- Typecheck reached only the known unrelated renderer blocker at `CodingAgentSession.tsx:387` (`skillInvocations` missing from `Props`).
+
+
+## Requirement → test coverage
+| Area | Test coverage |
+|---|---|
+| Repository defaults/readiness | `capability-repository.test.ts` — default-only required settings ready; required secret/setup false |
+| Verification consent gate | `capability-distribution-service.test.ts` — verifier not called for missing acceptance |
+| Installer verification fail-closed | `capability-package-installer.test.ts` — digest mismatch rejected |
+| Catalog immutable snapshot | `installed-catalog.test.ts` — frozen initial snapshot |
+| Lock injection | service accepts injected `PackageLock`; acquisition and executable/commit phases use the lock |
+
+## Changes
+Added injectable `PackageLock` usage to distribution acquisition and install verification/commit paths. Existing tests use dependency injection to avoid Electron/network dependencies.
+
+## Verification
+`npm test -- src/main/capabilities/capability-package-installer.test.ts src/main/capabilities/installed-catalog.test.ts src/main/capabilities/capability-distribution-service.test.ts src/main/capabilities/capability-repository.test.ts`
+
+Result: **4 files passed, 10 tests passed**.
+
+`npm run typecheck` remains blocked by the unrelated existing renderer diagnostic at `src/renderer/features/coding-agent/views/CodingAgentSession.tsx:387` (`skillInvocations` is not declared on the component props).
+
+## Task 7A3 — installed catalog validation and immutable snapshots
+
+Implemented strict, path-free catalog validation with bounded static reads, canonical managed-layout checks, exact pointer identity, descriptor/permission/content digest verification, recursive immutable snapshots, and serialized refresh ordering. Invalid/non-installed records are omitted; failed refreshes preserve the previous snapshot.
+
+Direct catalog tests currently present: 1 (initial immutable snapshot). Full temporary-layout Task 7A3 coverage remains pending in the checkout.
+
+## Status
+**BLOCKED**: the complete brief still requires additional real temporary-fixture tests and implementation for atomic rollback, pointer/catalog failure compensation, startup interruption reconciliation, full Official/Community DTO projections, and complete lock lifetime across consent. These are not honestly claimable as covered in this checkout.
+
+## Commits
+- `0f40db5 feat(capabilities): install verified npm packages atomically`
+- `a1a2155 test(capabilities): cover transactional npm installation`
+
+## 7A1 requirement → test evidence
+| # | Requirement | Direct passing assertion |
+|---|---|---|
+| 1 | Successful install moves staged package to exact version directory | `moves a successful staged package to the exact version directory` |
+| 2 | Atomic active pointer has exact identity, digest, and relative paths | `writes an atomic active pointer with exact identity and relative paths` |
+| 3 | Verification precedes DB commit, then catalog refresh | `verifies committed path, commits DB, then refreshes catalog` order recorder |
+| 4 | Different-digest same-version collision is rejected without overwrite | `rejects a same-version collision with a different digest without overwrite` |
+| 5 | Identical same-version destination is safely reused without duplicate state | `reuses an identical same-version destination without duplicate state` |
+| 6 | Unrelated filesystem and stable DB state remains unchanged | `does not modify unrelated package directory, pointer, or stable DB record` |
+| 7 | Stable records contain no temporary or absolute package paths | `returns path-free stable records and DTOs` |
+| 8 | Accepted permission defaults are ready with no session or activation | `initializes accepted permission defaults ready without sessions or activation` |
+
+Focused result: **8 tests passed**.
+
+### 7A1 fix round 1
+Added direct assertions for staged-source removal, a real unrelated stable installation record, and persistence of accepted permission digest/default configuration during commit. No activation dependency was added to the installer.
+
+### 7A1 fix round 2
+Staged removal now checks ENOENT via access; isolation snapshots a stable installation record; configuration initialization is invoked from commitFresh and failure rollback is asserted. No activation dependency is introduced; explicit activation spies remain a 7B service concern.
+
+## Task 7A1R — journaled atomic installer reset
+
+### Architecture
+- `CapabilityPackageInstaller` snapshots target capability configuration and managed installation before mutation, verifies committed content before the same-connection outer transaction, and performs catalog compensation with ownership-aware filesystem cleanup.
+- `CapabilityRepository.snapshotInstalledConfiguration()` / `restoreInstalledConfiguration()` are narrow immutable snapshot APIs; restore deletes settings first, including orphan settings when installation was absent.
+- `ManagedPackageRepository.failOperationCoherently()` transitions an attempted operation to stable `failed/installing` state after either transactional or catalog failure.
+- Pointer bytes are restored exactly (or removed), temporary pointer files are cleaned, and only destinations moved by this attempt are removed.
+
+### Requirement → test map (A–H)
+| Gate | Evidence |
+|---|---|
+| A | installer rollback test: configuration/managed failure leaves target rows and owned filesystem absent; operation failed |
+| B | installer compensation path snapshots/restores target DB and pointer state on catalog refresh failure |
+| C | identical pre-existing destination is reused and never removed |
+| D | repository restore explicitly deletes settings before absent-installation restore |
+| E | restore APIs and filesystem cleanup are idempotent (`force`/exact upsert-delete semantics) |
+| F | installer isolation fixture preserves unrelated package/pointer/record bytes |
+| G | committed digest and injected verification ordering precede DB and catalog; source is ENOENT; records are path-free |
+| H | all four Task 7 test files pass together |
+
+### Verification evidence
+```text
+$ npm test -- --run src/main/capabilities/capability-package-installer.test.ts src/main/capabilities/installed-catalog.test.ts src/main/capabilities/capability-distribution-service.test.ts src/main/capabilities/capability-repository.test.ts
+4 files passed; 18 tests passed (including direct installer rollback, stable-error, operation-failure, and orphan-settings assertions).
+
+$ npm run typecheck
+FAIL: pre-existing renderer diagnostic CodingAgentSession.tsx:387 (skillInvocations missing from Props)
+```
+
+## Task 7A — installer and installed-catalog hardening
+
+| Requirement | Test/evidence |
+|---|---|
+| Verified content is checked after move and before DB commit | `capability-package-installer.ts`: digest verification and injected `verifyCommittedPath` hook precede `commitInstallation` |
+| Atomic active pointer and rollback on pointer/DB errors | installer writes sibling temp then renames; catch removes pointer and destination |
+| Collision fails closed | destination existence is rejected before rename |
+| Path-free installation records | returned record is repository DTO and contains no filesystem paths |
+| Immutable catalog and deterministic ordering | `installed-catalog.ts`: frozen entries/snapshot and stable item/version sort |
+| Catalog fail-closed validation | refresh validates pointer metadata, managed paths, files, descriptor identity/permission digest, and on-disk tree digest; snapshot assignment occurs only after full success |
+| Previous snapshot preservation | refresh builds `next` locally and assigns only after validation completes |
+
+Exact evidence:
+
+```text
+$ npm test -- src/main/capabilities/capability-package-installer.test.ts src/main/capabilities/installed-catalog.test.ts src/main/capabilities/capability-distribution-service.test.ts src/main/capabilities/capability-repository.test.ts
+4 files passed (4); 10 tests passed (10)
+
+$ npm run typecheck
+FAIL (pre-existing unrelated renderer diagnostic):
+CodingAgentSession.tsx:387 — Property 'skillInvocations' does not exist on type Props
+```
+
+## 7A1 fix round 4
+| Requirement | Direct evidence |
+|---|---|
+| Same-connection transaction rollback | Installer tests inject `db.transaction(work)()` and verify initialization/commit failure removes managed/configuration state and filesystem artifacts. |
+| Catalog failure compensation | Installer snapshots prior pointer, managed installation, capability installation/settings and restores them in an explicit compensating transaction. |
+| Isolation | Real second installation fixture is retained byte-for-byte by target success/failure paths. |
+| Activation boundary | No activation claim; activation spies remain Task 7B. |
+
+Focused verification: `npm test -- --run src/main/capabilities/capability-package-installer.test.ts` — **1 file passed, 9 tests passed**.
+
+## Task 7A1R fix round 2
+
+Snapshot acquisition is now an explicit read-only phase guarded by `snapshotsComplete`. Optional filesystem reads suppress only `ENOENT`; all other filesystem and repository snapshot failures become safe, path-free install failures without target compensation. Once the full journal exists, compensation uses the captured operation through the identity-validating `compensateFailedInstall` repository API, restores exact configuration/managed/pointer state, and removes only attempt-owned filesystem content.
+
+### Direct installer tests (18)
+1. `moves a successful staged package to the exact version directory`
+2. `writes an atomic active pointer with exact identity and relative paths`
+3. `verifies committed path, commits DB, then refreshes catalog`
+4. `rejects a same-version collision with a different digest without overwrite`
+5. `reuses an identical same-version destination without duplicate state`
+6. `does not modify unrelated package directory, pointer, or DB record`
+7. `returns path-free stable records and DTOs`
+8. `rolls back package state when configuration initialization fails`
+9. `initializes accepted permission defaults ready without sessions or activation`
+10. `rolls back settings operation pointer destination temp and sessions when managed commit throws`
+11. `compensates a fresh catalog refresh failure to exact absence`
+12. `restores prior managed configuration settings and pointer bytes after catalog failure`
+13. `preserves a pre-existing identical destination when a later refresh fails`
+14. `removes orphan settings when restoring an absent prior capability`
+15. `keeps the exact baseline when compensation is invoked twice`
+16. `preserves a complete recursively snapshotted unrelated real installation across target failure`
+17. `does not mutate target state when operation repository snapshot fails`
+18. `propagates non-ENOENT pointer reads as a safe path-free failure without target mutation`
+
+### Verification
+- Focused installer: **1 file passed, 18 tests passed**.
+- All four Task 7 files: **4 files passed, 27 tests passed**.
+- `npm run typecheck`: Task 7A1R files pass; blocked only by the known unrelated `CodingAgentSession.tsx:387` missing `skillInvocations` prop diagnostic.
+- `npm run lint -- --no-fix`: blocked by duplicate `eslint-plugin-import` resolution between the worktree and parent checkout.
+
+## Task 7A1R fix round 3
+
+Added reusable `snapshotInstalledFixture(unrelated)` coverage over an unrelated capability installed through the real installer. Its snapshot includes every recursive package entry (relative path, type, permission mode, and base64 bytes), exact pointer bytes, managed installation, capability installation, and settings.
+
+Direct isolation cases:
+- `preserves the exact unrelated installed fixture after target success`
+- `preserves the exact unrelated installed fixture after committed-path verification failure`
+- `preserves the exact unrelated installed fixture after managed DB commit failure after capability initialization`
+- `preserves the exact unrelated installed fixture after catalog refresh failure`
+
+Direct installer idempotency:
+- `fully compensates two consecutive catalog failures through commitFresh without baseline drift` invokes two real target operations through `commitFresh`; after each post-commit catalog failure it asserts exact target DB/configuration baseline, failed/installing operation semantics, pointer/destination/temp absence, and exact unrelated snapshot equality. It does not invoke repository restore APIs from the test.
+
+Verification:
+- Focused installer: **1 file passed, 21 tests passed**.
+- All four Task 7 files: **4 files passed, 30 tests passed**.
+- Typecheck remains blocked only by the known unrelated `CodingAgentSession.tsx:387` missing `skillInvocations` prop diagnostic.
+
+## Task 7A2 — pointer durability and cleanup-failure semantics
+
+### Architecture and direct coverage
+- Pointer publication now opens the sibling temporary file, writes the exact JSON, calls file `sync()`, closes it, renames it atomically, then opens and syncs the `active/` directory. Known platforms that do not support directory fsync (`EINVAL`, `ENOTSUP`, `EISDIR`) are tolerated; injected failures remain fatal.
+- `InstallerFileSystem` is a narrow injectable adapter over only the filesystem operations used by the transaction. Four deterministic installer cases inject temp-write, file-sync, pointer-rename, and directory-sync failures.
+- Each injected publication failure directly asserts a stable path-free error, absent target managed/configuration rows, failed/installing operation, absent prior pointer/temp/attempt-owned destination, and byte-for-byte preservation of an unrelated real installation.
+- Cleanup failures are accumulated rather than swallowed. The attempted managed installation is persisted as `invalid`, the operation remains `failed/installing`, and the logger receives only `package_install_cleanup_failed`; this leaves startup reconciliation evidence and never reports a completed/installed state.
+- The older pointer `resolves` assertion is now awaited.
+
+### RED/GREEN
+The new failure-injection cases define the previously missing durability behavior (the prior implementation used `writeFile` followed directly by `rename`, had no injectable filesystem seam, and swallowed cleanup errors). After implementing the adapter, fsync sequence, and recovery record, focused GREEN was:
+
+```text
+Test Files  1 passed (1)
+Tests       26 passed (26)
+```
+
+### Verification
+```text
+$ npm test -- --run src/main/capabilities/capability-package-installer.test.ts
+1 file passed; 26 tests passed.
+
+$ npm test -- --run src/main/capabilities/capability-package-installer.test.ts src/main/capabilities/installed-catalog.test.ts src/main/capabilities/capability-distribution-service.test.ts src/main/capabilities/capability-repository.test.ts
+4 files passed; 35 tests passed.
+
+$ npm run typecheck
+Blocked only by the pre-existing unrelated renderer diagnostic at CodingAgentSession.tsx:387: skillInvocations is not a Props member.
+
+$ npm run lint -- --no-fix ...
+Blocked before linting by duplicate eslint-plugin-import resolution between this worktree and the parent checkout.
+```
+
+## Task 7A2 fix round 1
+
+Directory durability policy now belongs exclusively to the production filesystem adapter's `syncDirectory()` implementation. It closes any opened handle in `finally` and tolerates `EPERM`, `EINVAL`, `ENOTSUP`, `EISDIR`, and `ENOSYS` only on Windows. Installer orchestration treats every injected `syncDirectory()` rejection as fatal and compensates it.
+
+Each of the four deterministic publication-failure cases now begins from a real installed target and unrelated installation, overwrites the target pointer with distinctive prior bytes, retries through a new operation, and asserts exact pointer bytes, target managed/configuration/package-tree state, unrelated state, failed/installing operation, path-free error, and temp cleanup. A focused predicate test verifies Windows tolerated codes, a fatal Windows code, the same unsupported code on non-Windows, and an unstructured error.
+
+Verification after the fix:
+
+```text
+$ npm test -- --run src/main/capabilities/capability-package-installer.test.ts
+1 file passed; 27 tests passed.
+
+$ npm test -- --run src/main/capabilities/capability-package-installer.test.ts src/main/capabilities/installed-catalog.test.ts src/main/capabilities/capability-distribution-service.test.ts src/main/capabilities/capability-repository.test.ts
+4 files passed; 36 tests passed.
+```
+
+## Task 7A3 — installed catalog validation and immutable snapshots
+
+Catalog implementation uses the Task 6 containment-safe bounded file-handle reader for 64 KiB pointers and 256 KiB manifests, reuses the canonical `permissionDigest`, validates root/manifest/entry identity around two package-tree digest passes, and publishes only complete recursively frozen snapshots through a serialized refresh queue.
+
+### Direct installed-catalog tests (39)
+
+- Baseline/valid behavior (4): `starts with an immutable empty snapshot`; `loads multiple real entries in deterministic ID/version order and performs exact lookup`; `publishes recursively immutable entries, records, descriptors, arrays, and nested objects`; `serializes controlled concurrent refreshes so the newest invocation publishes last`.
+- Omission (3 parameterized cases): `omits incompatible managed records without touching their files`; `omits migration_pending managed records without touching their files`; `omits invalid managed records without touching their files`.
+- Pointer/schema/identity rejection (11): `rejects missing pointer ...`; `malformed pointer JSON`; `oversized pointer`; `unknown pointer field`; `missing pointer field`; `legacy pointer digest alias`; and `packageName`, `capabilityId`, `version`, `integrity`, and `contentDigest identity mismatch`.
+- Path rejection (6): `rejects absolute POSIX manifest path ...`; `Windows drive entry path`; `Windows UNC entry path`; `traversal manifest path`; `backslash separator ambiguity`; `NUL path`.
+- Filesystem rejection (9): `rejects pointer symlink ...`; `package-root symlink`; `manifest symlink`; `entry symlink`; `non-file entry`; `missing package root`; `missing manifest`; `missing entry`; `oversized manifest`.
+- Descriptor/digest/permission rejection (5): `rejects invalid static descriptor ...`; `descriptor capability ID mismatch`; `descriptor version mismatch`; `package tree tamper`; `accepted permission digest mismatch`.
+- Check/use race (1): `rejects an entry replacement between digest passes without publishing partial state`.
+
+Every named rejection fixture executes a real mutation and asserts that mutation before refresh. Every rejection also asserts exact path-free `package_install_failed`, prior snapshot object identity, and unchanged deep snapshot content.
+
+### Verification
+
+- Focused catalog: `npm test -- --run src/main/capabilities/installed-catalog.test.ts` — **1 file passed, 39 tests passed**.
+- All four Task 7 suites: `npm test -- --run src/main/capabilities/capability-package-installer.test.ts src/main/capabilities/installed-catalog.test.ts src/main/capabilities/capability-distribution-service.test.ts src/main/capabilities/capability-repository.test.ts` — **4 files passed, 74 tests passed**.
+- Task 6 inspector regression suite: **1 file passed, 20 tests passed**.
+- `npm run typecheck`: Task 7A3 files pass; blocked only by the pre-existing renderer diagnostic at `CodingAgentSession.tsx:387` (`skillInvocations` is not a `Props` member).
+- `npm run lint -- --no-fix ...`: blocked before linting by duplicate `eslint-plugin-import` resolution between this worktree and the parent checkout.
+
+## Task 7B1 fix round 1 — coherent shared-code consent lifecycle
+
+`LeaseError.code` is now a runtime-validated `PackageErrorCode`. The registry publishes one immutable terminal outcome (`completed`, `cancelled`, `expired`, or `failed`) before owned staging cleanup. The service consumes that outcome to persist cancellation/failure and publish schema-valid progress. Lock loss maps to `package_busy`, expiry/cancel to `package_permission_denied`, unknown static-inspection failures to `package_manifest_invalid`, and unknown accept failures to `package_install_failed`; valid shared codes are preserved.
+
+The accept callback receives its lock owner. The service asserts health immediately before executable verification and again immediately after verification before installer commit. `CapabilityRepository` is retained independently of installer injection and is the source of projected configured state.
+
+### Direct service tests (14)
+1. `inspects a Community package statically and holds its only lock`
+2. `inspects an exact Official catalog package without downgrading trust`
+3. `fails unknown Official lookup specifically as package_not_found`
+4. `preserves Official identity mismatch as package_manifest_invalid`
+5. `rejects invalid input before lock, operation, or acquisition`
+6. `blocks an existing package name collision coherently`
+7. `blocks an existing Capability ID collision coherently`
+8. `records acquisition failure and cleans with a safe shared code`
+9. `records static inspection failure and cleans with package_manifest_invalid`
+10. `installs in verify-then-commit order, completes, cleans, releases, and creates no session`
+11. `uses configured repository state with a custom installer`
+12. `detects compromise after verifier and skips installer`
+13. `isolates throwing listeners and unsubscribe prevents later delivery`
+14. `keeps a second inspect out of acquisition while the first awaits consent`
+
+Lease coverage is now **15 direct tests**, including `delivers one typed terminal outcome before cleanup` and `passes the same healthy owner to the accept callback`.
+
+### Verification
+- Focused service + lease + PackageLock: **3 files passed; 36 tests passed**.
+- Task 7 service, lease, lock, installer, catalog, and repositories: **7 files passed; 115 tests passed**.
+- `npm run typecheck`: changed Task 7 files typecheck; command remains blocked only by the pre-existing renderer `CodingAgentSession.tsx:387` missing `skillInvocations` prop diagnostic.
+
+## Task 7B2 — negative consent/install lifecycle, cancellation, setup, no activation
+
+### Lifecycle corrections
+
+- Install input is schema-parsed before its inspection ID is used. The exact consent tuple is consumed once; every mismatch terminates with `package_permission_denied` before executable verification.
+- Lease cancellation is now observed after acquisition and after static inspection, so cancellation cannot publish a late ready DTO. Accepted cancellation during executable verification aborts the owned signal and resolves the cancel caller while install/inspect receive the stable permission-denied terminal error.
+- Lease phases permit cancellation during `verifying` and reject it during `committing`, preserving the atomic installer boundary.
+- Executable verification identity is checked against Capability ID, version, staged content digest, and the exact ordered tool list before commit.
+- Installed detail DTOs, including nested settings, are recursively frozen.
+
+### Direct test evidence (52 focused tests)
+
+The focused service/lease suites increased from **29 to 52 tests** (**23 added**).
+
+New service cases:
+
+1. `rejects an unknown inspection without touching package work`
+2. `rejects an invalid install request before selecting a pending lease`
+3. `consumes a consent with mismatched package name without verification`
+4. `consumes a consent with mismatched version without verification`
+5. `consumes a consent with mismatched integrity without verification`
+6. `consumes a consent with mismatched permission digest without verification`
+7. `rejects verifier Capability ID mismatch before installer commit`
+8. `rejects verifier version mismatch before installer commit`
+9. `rejects verifier content digest mismatch before installer commit`
+10. `rejects verifier missing tool mismatch before installer commit`
+11. `rejects verifier changed tool mismatch before installer commit`
+12. `detects staged content mutation at the verifier boundary`
+13. `expires at exactly fifteen minutes and cannot be revived`
+14. `accepts one millisecond before the fifteen-minute deadline`
+15. `cancels an in-flight acquisition through its real AbortSignal`
+16. `cancels an in-flight verifier, skips commit, and records cancellation`
+17. `projects needs_setup for a required secret while retaining reviewed settings`
+18. `projects needs_setup for a required non-secret while retaining reviewed settings`
+19. `rejects cancellation after atomic commit begins`
+
+The successful integration case is explicitly named `installs in verify-then-commit order without creating or activating a session`; it asserts zero `session_capabilities` rows and untouched activation-boundary spies. The configured-repository case proves `ready` projection from persisted configuration. Existing direct lease race tests continue to cover duplicate accept, accept/cancel, accept/expiry, exact-once terminal outcome, and lock ownership.
+
+New lease cases:
+
+20. `cancels during acquisition without publishing readiness`
+21. `cancels after acquisition while static inspection is pending`
+22. `accepts cancellation during verification and resolves the cancel caller`
+23. `rejects cancellation after commit phase begins and completes once`
+
+Tuple failures assert verifier/installer exclusion, cleanup, release, coherent DB failure, schema-valid frozen events, and path-free errors. Verification failures assert no commit, cleanup/release, and coherent `package_verification_failed` persistence. Cancellation tests use real `AbortSignal` instances and deterministic deferred work; expiry tests use an injected clock/scheduler with no sleeps.
+
+### RED/GREEN and verification
+
+RED exposed four event-immutability assertions that were checking schema-parser copies rather than the emitted frozen values, and cancellation tests established the desired accepted-cancel resolution. Assertions were corrected to inspect the actual emitted object; production cancellation was corrected to resolve the cancel caller while retaining stable terminal errors for the interrupted operation.
+
+```text
+$ npm test -- src/main/capabilities/capability-distribution-service.test.ts src/main/capabilities/consent-lease-registry.test.ts
+2 files passed; 52 tests passed.
+
+$ npm test -- src/main/capabilities/capability-package-installer.test.ts src/main/capabilities/installed-catalog.test.ts src/main/capabilities/capability-distribution-service.test.ts src/main/capabilities/consent-lease-registry.test.ts src/main/packages/package-lock.test.ts src/main/capabilities/capability-repository.test.ts src/main/packages/package-repository.test.ts
+7 files passed; 138 tests passed.
+
+$ npm run typecheck
+Blocked only by the known unrelated renderer diagnostic at CodingAgentSession.tsx:387: skillInvocations is not a Props member.
+
+$ git diff --check
+passed.
+
+$ npx prettier --check <four changed TypeScript files>
+passed.
+```
+
+## Task 7B2 review fix — abort-ignoring verifier commit gate
+
+The service now checks its owned operation `AbortSignal` immediately after executable verification resolves and before lock-health revalidation, the `committing` phase transition, or installer invocation. An abort maps to `package_permission_denied`; the lease therefore publishes the coherent cancelled terminal outcome even when a verifier ignores abort and resolves normally.
+
+Direct deterministic coverage: `never commits when an abort-ignoring verifier resolves after cancellation` holds verification on a deferred promise, cancels while verification is active, then resolves a valid verifier result. It asserts no installer call, cancelled DB state and schema-valid event, exactly-once staging cleanup, and lock release.
+
+Verification:
+
+```text
+Focused service + lease: 2 files passed; 53 tests passed.
+All Task 7 suites: 7 files passed; 139 tests passed.
+Typecheck: blocked only by the known unrelated CodingAgentSession.tsx:387 skillInvocations Props diagnostic.
+```

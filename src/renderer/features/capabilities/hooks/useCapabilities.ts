@@ -31,7 +31,9 @@ export function useCapabilities(runId?: string) {
 
   useEffect(() => {
     mounted.current = true; refreshPending.current = false; setLoading(true); setDetail(undefined); selectedId.current = undefined; void refresh();
-    const unsubscribe = window.api.capabilities.onChanged((event) => { if (!runId || event.runId === runId) void refresh(); });
+    const unsubscribe = window.api.capabilities.onChanged((event) => {
+      if (event.scope === "catalog" || (event.scope === "session" && event.runId === runId)) void refresh();
+    });
     return () => { mounted.current = false; unsubscribe(); };
   }, [refresh, runId]);
 
