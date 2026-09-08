@@ -14,7 +14,8 @@ let db: BetterSQLite3Database<typeof schema> | null = null;
 let configuredUserDataPath: string | null = null;
 
 export const configureDatabaseUserDataPath = (userDataPath: string): void => {
-  if (sqlite && configuredUserDataPath !== userDataPath)
+  const requestedDatabasePath = path.join(userDataPath, "data", "app.db");
+  if (sqlite && getDatabasePath() !== requestedDatabasePath)
     throw new Error("database_already_initialized");
   configuredUserDataPath = userDataPath;
 };

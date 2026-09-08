@@ -1,12 +1,6 @@
 import path from "node:path";
 import { initDatabase } from "./database";
 import {
-  configureCapabilityIpc,
-  configureMarketplaceIpc,
-  configureSkillIpc,
-  registerIpcHandlers,
-} from "./ipc";
-import {
   applyCodingAgentCapabilities,
   autoDiscoverAgent,
   configureCodingAgentCapabilityBridge,
@@ -77,7 +71,6 @@ const initializeSkills = (): SkillService => {
     log: (message, error) =>
       console.error(message, error instanceof Error ? error.name : "unknown"),
   });
-  if (currentMode === "ui") configureSkillIpc(service);
   if (currentMode === "ui")
     configureCodingAgentSkillInvocationSource((runId) =>
       service.listRunInvocations(runId).map((record) => ({
@@ -282,7 +275,6 @@ const initializeCapabilities = async (): Promise<CapabilityService> => {
     packageLock,
     webSearchMigration,
   });
-  if (currentMode === "ui") configureCapabilityIpc(service);
   return service;
 };
 
@@ -308,6 +300,11 @@ export async function createApplicationServices(input: {
     throw new Error("capability_startup_unavailable");
   const distributionService = capabilityDistributionService;
   const skillService = input.mode === "ui" ? initializeSkills() : undefined;
+  if (input.mode === "ui") {
+    const { configureCapabilityIpc, configureSkillIpc } = await import("./ipc");
+    configureCapabilityIpc(capabilityService);
+    if (skillService) configureSkillIpc(skillService);
+  }
   return {
     capabilityService,
     distributionService,

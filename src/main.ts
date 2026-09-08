@@ -6,6 +6,7 @@ import {
 } from "./main/application-bootstrap";
 import { workspaceTerminalService } from "./main/workspace/workspace-terminal-service";
 import { stopCodingAgents } from "./main/coding-agents/coding-agent-service";
+import { applicationArguments } from "./main/cli/arguments";
 
 if (started) app.quit();
 
@@ -37,7 +38,7 @@ const electronApp: ElectronAppPort = {
 };
 
 void runApplicationBootstrap(
-  process.argv.slice(app.isPackaged ? 1 : 2),
+  applicationArguments(process.argv.slice(app.isPackaged ? 1 : 2)),
   electronApp,
 ).catch(() => {
   console.error("capability_startup_unavailable");

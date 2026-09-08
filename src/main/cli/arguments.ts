@@ -35,6 +35,10 @@ export class CliUsageError extends Error {
   }
 }
 
+export function applicationArguments(argv: readonly string[]): string[] {
+  return argv.filter((argument) => !argument.startsWith("--user-data-dir="));
+}
+
 export function parseCliArguments(argv: readonly string[]): ParsedCliArguments {
   if (argv.length === 0) return { mode: "ui" };
   const [verb, value, ...extra] = argv;

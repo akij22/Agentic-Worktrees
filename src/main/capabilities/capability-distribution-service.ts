@@ -48,6 +48,7 @@ import { ManagedPackageRepository } from "../packages/package-repository";
 import type { ManagedPackageLayout } from "../packages/storage-layout";
 import { OfficialCatalogService } from "../packages/catalog/official-catalog";
 import { PackageLock } from "../packages/package-lock";
+import { toCapabilitySummaryDto } from "./catalog";
 import { CapabilityRepository } from "./capability-repository";
 import {
   ConsentLeaseRegistry,
@@ -114,14 +115,14 @@ export class CapabilityDistributionService {
   private readonly installer: CapabilityPackageInstaller;
   private readonly installedCatalog: Pick<
     InstalledCapabilityCatalog,
-    "get" | "refresh"
+    "get" | "list" | "refresh"
   >;
   constructor(
     private readonly deps: {
       layout: ManagedPackageLayout;
       acquirer?: NpmPackageAcquirer;
       metadata?: Pick<NpmPackageMetadata, "resolve">;
-      installedCatalog?: Pick<InstalledCapabilityCatalog, "get" | "refresh">;
+      installedCatalog?: Pick<InstalledCapabilityCatalog, "get" | "list" | "refresh">;
       sessionCoordinator?: CapabilitySessionPackageCoordinator;
       credentials?: Pick<CapabilityCredentialStore, "removeSecret">;
       inspector?: CapabilityPackageInspector;
@@ -285,7 +286,83 @@ export class CapabilityDistributionService {
   }
 
   async listMarketplaceCapabilities(): Promise<CapabilitySummaryDto[]> {
-    return [];
+    const officialCatalog = this.deps.officialCatalog ?? new OfficialCatalogService();
+    const official = await officialCatalog.load();
+    const summaries = new Map<string, CapabilitySummaryDto>();
+    for (const entry of official.snapshot.entries) {
+      summaries.set(
+        entry.capabilityId,
+        toCapabilitySummaryDto(
+          {
+            manifest: entry.descriptor.manifest,
+            reviewStatus: "official-reviewed",
+            trust: "official",
+            source: "npm",
+            packageName: entry.packageName,
+            toolNames: entry.descriptor.tools.map((tool) => tool.name),
+            runtime: {
+              kind: "managed",
+              capabilityId: entry.capabilityId,
+              packageName: entry.packageName,
+              version: entry.releaseSpec,
+              packageRoot: "",
+              manifest: "",
+              entry: "",
+              contentDigest: "",
+            },
+          },
+          "available",
+        ),
+      );
+    }
+    for (const installed of this.installedCatalog.list()) {
+      const configuration = this.capabilityRepository.getInstallation(installed.record.itemId);
+      summaries.set(
+        installed.record.itemId,
+        {
+          ...toCapabilitySummaryDto(
+            {
+              manifest: installed.descriptor.manifest,
+              reviewStatus: installed.record.reviewStatus,
+              trust: installed.record.trust,
+              source: "npm",
+              packageName: installed.record.packageName,
+              blocked: installed.record.state === "blocked",
+              toolNames: installed.descriptor.tools.map((tool) => tool.name),
+              runtime: {
+                kind: "managed",
+                capabilityId: installed.record.itemId,
+                packageName: installed.record.packageName,
+                version: installed.record.activeVersion!,
+                packageRoot: installed.packageRoot,
+                manifest: installed.manifestRelativePath,
+                entry: installed.entryRelativePath,
+                contentDigest: installed.record.activeContentDigest!,
+              },
+            },
+            installed.record.state === "blocked"
+              ? "unavailable"
+              : configuration?.configured
+                ? "ready"
+                : "needs_setup",
+          ),
+          installationState: installed.record.state === "blocked" ? "blocked" : "installed",
+        },
+      );
+    }
+    for (const record of this.repository.list("capability")) {
+      if (record.state !== "migration_pending") continue;
+      const summary = summaries.get(record.itemId);
+      if (summary)
+        summaries.set(record.itemId, {
+          ...summary,
+          packageName: record.packageName,
+          trust: record.trust,
+          reviewStatus: record.reviewStatus,
+          installationState: "migration_pending",
+        });
+    }
+    return [...summaries.values()].sort((left, right) => left.id.localeCompare(right.id));
   }
   async getInstalledCapability(
     _packageName: string,

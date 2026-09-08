@@ -10,6 +10,7 @@ import { bootstrapSchemaSql } from "../database/bootstrap";
 import { ManagedPackageRepository } from "../packages/package-repository";
 import { CapabilityRepository } from "./capability-repository";
 import { CapabilityDistributionService } from "./capability-distribution-service";
+import { runPackageCommand } from "../cli/run-command";
 
 const staged = {
   packageRoot: "/private/stage/secret",
@@ -92,6 +93,7 @@ function setup(
       toolNames: string[];
     }>;
     official?: unknown;
+    officialLoad?: () => Promise<unknown>;
     clock?: () => number;
     scheduler?: {
       setTimeout(callback: () => void, delayMs: number): unknown;
@@ -190,6 +192,16 @@ function setup(
     installer: installer as never,
     officialCatalog: {
       findCapability: vi.fn(async () => overrides.official),
+      load: vi.fn(overrides.officialLoad ?? (async () => ({
+        source: "fallback",
+        snapshot: {
+          schemaVersion: 1,
+          sequence: 1,
+          issuedAt: "2026-01-01T00:00:00.000Z",
+          expiresAt: "2027-01-01T00:00:00.000Z",
+          entries: [],
+        },
+      }))),
     } as never,
     clock: overrides.clock,
     scheduler: overrides.scheduler,
@@ -225,6 +237,73 @@ const failure = async (promise: Promise<unknown>) =>
     },
     (error) => error as Error & { code?: string },
   );
+
+describe("CapabilityDistributionService marketplace listing", () => {
+  it("reports a legacy Web Search migration as pending, not installed", async () => {
+    const webDescriptor = {
+      ...descriptor,
+      manifest: {
+        ...descriptor.manifest,
+        id: "agentic-worktrees.web-search",
+        version: "0.1.0",
+        name: "Web Search",
+      },
+    };
+    const officialLoad = vi.fn(async () => ({
+      source: "fallback" as const,
+      snapshot: {
+        schemaVersion: 1 as const,
+        sequence: 1,
+        issuedAt: "2026-01-01T00:00:00.000Z",
+        expiresAt: "2027-01-01T00:00:00.000Z",
+        entries: [{
+          capabilityId: "agentic-worktrees.web-search",
+          packageName: "@agentic-worktrees/web-search",
+          releaseSpec: "0.1.0",
+          publisher: "Agentic Worktrees",
+          minimumAppVersion: "1.0.0",
+          blockedVersions: [],
+          descriptor: webDescriptor,
+          releaseNotes: "",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        }],
+      },
+    }));
+    const f = setup({ officialLoad });
+    f.repository.saveMigrationPending({
+      packageName: "@agentic-worktrees/web-search",
+      itemKind: "capability",
+      itemId: "agentic-worktrees.web-search",
+      requestedSpec: "@agentic-worktrees/web-search@0.1.0",
+      trust: "official",
+      reviewStatus: "official-reviewed",
+    });
+
+    const listed = await f.service.listMarketplaceCapabilities();
+    const lines: string[] = [];
+    await runPackageCommand({ kind: "list" }, { distributionService: f.service }, {
+      writeLine: (line) => lines.push(line),
+      setExitCode: vi.fn(),
+      confirm: vi.fn(async () => false),
+    });
+
+    expect(listed).toEqual([expect.objectContaining({
+      id: "agentic-worktrees.web-search",
+      packageName: "@agentic-worktrees/web-search",
+      version: "0.1.0",
+      installationState: "migration_pending",
+      source: "npm",
+    })]);
+    expect(lines).toEqual([
+      "@agentic-worktrees/web-search\t0.1.0\tmigration_pending",
+    ]);
+    expect(JSON.stringify([listed, lines])).not.toContain("/private");
+  });
+
+  it("returns no installed entries when the official and managed catalogs are empty", async () => {
+    expect(await setup().service.listMarketplaceCapabilities()).toEqual([]);
+  });
+});
 
 describe("CapabilityDistributionService direct consent integration", () => {
   it("rejects an install payload smuggling the update packageName discriminator", async () => {

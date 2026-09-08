@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { parseCliArguments } from "./arguments";
+import { applicationArguments, parseCliArguments } from "./arguments";
+
+describe("applicationArguments", () => {
+  it("removes Electron's user-data switch before parsing app commands", () => {
+    expect(applicationArguments(["--user-data-dir=/tmp/profile", "list"])).toEqual(["list"]);
+  });
+});
 
 describe("parseCliArguments", () => {
   it("returns UI mode only for no arguments", () => expect(parseCliArguments([])).toEqual({ mode: "ui" }));
