@@ -36,6 +36,13 @@
 - Removed the unused `readPackedManifest` helper.
 - Verification: capability smoke 5 files/14 tests passed; package contracts 1 file/3 tests passed; `package:capabilities` passed; direct Web Search smoke passed its deterministic lifecycle and explicitly skipped the real provider because no executable was supplied. Unknown-scenario CLI exited nonzero.
 
+## Fix round 2
+
+- Made renderer and process-log output injectable into the stateful lifecycle service rather than hardcoding harmless output.
+- Added independent lifecycle assertions for leaked managed paths, secret references/tokens, queries, fetched content, and logs, plus a safe-output control.
+- Every test-created lifecycle layout now exposes cleanup and removes its temporary directory in `finally`; success and forced-failure tests verify the directory no longer exists.
+- Verification: capability smoke 5 files/19 tests passed; package contracts 1 file/3 tests passed; direct Web Search smoke passed locally and explicitly skipped the real provider without an executable.
+
 ## Safety
 
 No npm publish, catalog signing, key generation, public network, real provider, credential, or persistent smoke user data was used. Generated package/build output is ignored and is not intended for staging.

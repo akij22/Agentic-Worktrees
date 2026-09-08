@@ -28,7 +28,7 @@ export function assertSmokeOutputIsRedacted(output, forbidden) {
 }
 
 /** Stateful, disk-backed local distribution seam. Artifact metadata is independent of lifecycle expectations. */
-export function createStatefulLocalDistributionService(directory) {
+export function createStatefulLocalDistributionService(directory, output = {}) {
   const statePath = join(directory, "state.json");
   let state = { record: undefined, activeSessions: [], logs: [] };
   const persist = () => writeFile(statePath, JSON.stringify(state));
@@ -47,8 +47,11 @@ export function createStatefulLocalDistributionService(directory) {
     async activeTools() { return state.activeSessions.length ? ["web_search"] : []; },
     async seedLegacyOffline() { state.record = { id: capabilityId, version: "0.0.0", state: "migration_pending", settings: {}, secretReferences: {} }; state.activeSessions = []; await persist(); },
     async reconnect(path) { const item = await artifact(path); state.record = { ...state.record, version: item.version, state: "installed" }; await persist(); },
-    async rendererPayload() { return JSON.stringify({ id: state.record?.id, version: state.record?.version, state: state.record?.state }); },
-    async logs() { return state.logs.join("\n"); },
+    async rendererPayload() {
+      const safePayload = JSON.stringify({ id: state.record?.id, version: state.record?.version, state: state.record?.state });
+      return output.rendererPayload ? output.rendererPayload(structuredClone(state)) : safePayload;
+    },
+    async logs() { return output.logs ? output.logs(structuredClone(state)) : state.logs.join("\n"); },
   };
 }
 
