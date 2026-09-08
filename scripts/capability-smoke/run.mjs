@@ -1,5 +1,6 @@
 import { pathToFileURL } from "node:url";
 import { createElectronCapabilitySmokeDriver } from "./driver.mjs";
+import { runDeterministicLocalWebSearchSmoke } from "./local-lifecycle.mjs";
 import { webSearchScenario } from "./web-search-scenario.mjs";
 import { urlFetchScenario } from "./url-fetch-scenario.mjs";
 
@@ -40,16 +41,21 @@ export async function runCapabilitySmokes(driver, scenarios, options = {}) {
   }
 }
 
-export async function runFromEnvironment(environment = process.env) {
+export async function runFromEnvironment(environment = process.env, argv = process.argv.slice(2)) {
+  const scenarios = [webSearchScenario, urlFetchScenario];
+  const index = argv.indexOf("--scenario");
+  const requested = index >= 0 ? argv[index + 1] : undefined;
+  if (index >= 0 && !requested) throw new Error("--scenario requires a scenario id.");
+  if (requested && !scenarios.some((scenario) => scenario.id === requested)) throw new Error(`Unknown capability smoke scenario: ${requested}.`);
+
+  if (!requested || requested === "web-search") await runDeterministicLocalWebSearchSmoke();
   if (!environment.AW_SMOKE_EXECUTABLE) {
-    return { skipped: true, reason: "AW_SMOKE_EXECUTABLE is not set; real-provider smoke skipped." };
+    return { skipped: true, reason: "Deterministic local smoke passed; AW_SMOKE_EXECUTABLE is not set, so real-provider smoke was skipped." };
   }
-  const index = process.argv.indexOf("--scenario");
-  const selected = index >= 0 ? [process.argv[index + 1]] : undefined;
   await runCapabilitySmokes(
     createElectronCapabilitySmokeDriver(environment.AW_SMOKE_EXECUTABLE),
-    [webSearchScenario, urlFetchScenario],
-    { selectedScenarioIds: selected, apiKey: environment.EXA_API_KEY || undefined },
+    scenarios,
+    { selectedScenarioIds: requested ? [requested] : undefined, apiKey: environment.EXA_API_KEY || undefined },
   );
   return { skipped: false };
 }

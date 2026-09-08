@@ -28,6 +28,14 @@
 - `npm run lint` is blocked before linting by duplicate inherited `eslint-plugin-import` resolution between this worktree and its parent checkout.
 - `npm test` — 163 files passed, 2 files failed; 1160 tests passed, 26 failed. Failures are the existing Marketplace-service bootstrap mismatch: 3 in `src/main-lifecycle.test.ts` and all 23 in `src/main/ipc/github-auth-handlers.test.ts` (`Marketplace service is unavailable`).
 
+## Fix round 1
+
+- Replaced the pre-programmed lifecycle mock with an independent disk-backed distribution service. Local artifact metadata drives installed versions and verifier behavior; settings, active provider sessions, removal, restart persistence, migration state, picker state, and redacted renderer/log output are read from mutable persisted state.
+- Added negative controls proving a no-op update and a verifier that mutates state both fail the lifecycle assertions.
+- Wired the deterministic lifecycle into `smoke:capabilities:web-search`; it runs before the optional packaged-provider phase. Missing and unknown `--scenario` values now fail with a nonzero exit instead of silently skipping.
+- Removed the unused `readPackedManifest` helper.
+- Verification: capability smoke 5 files/14 tests passed; package contracts 1 file/3 tests passed; `package:capabilities` passed; direct Web Search smoke passed its deterministic lifecycle and explicitly skipped the real provider because no executable was supplied. Unknown-scenario CLI exited nonzero.
+
 ## Safety
 
 No npm publish, catalog signing, key generation, public network, real provider, credential, or persistent smoke user data was used. Generated package/build output is ignored and is not intended for staging.

@@ -1,77 +1,59 @@
-import { access } from "node:fs/promises";
-import { describe, expect, it, vi } from "vitest";
-import { assertSmokeOutputIsRedacted, runLocalWebSearchLifecycle, withPackedWorkspace } from "./local-lifecycle.mjs";
+import { access, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { createStatefulLocalDistributionService, runDeterministicLocalWebSearchSmoke, runLocalWebSearchLifecycle, withPackedWorkspace } from "./local-lifecycle.mjs";
 
-type RecordState = { id: string; version: string; state: string; settings?: object };
-
-function createDistributionService() {
-  let record: RecordState | undefined;
-  let active = false;
-  const calls: string[] = [];
-  return {
-    calls,
-    list: vi.fn(async () => record ? [record] : []),
-    install: vi.fn(async (tarball: string) => { calls.push(`install:${tarball}`); record = { id: "agentic-worktrees.web-search", version: "0.1.0", state: "installed" }; }),
-    configure: vi.fn(async (_id: string, settings: object) => { calls.push("configure"); record = { ...record!, settings }; active = true; }),
-    restart: vi.fn(async () => { calls.push("restart"); }),
-    get: vi.fn(async () => record),
-    discover: vi.fn(async (provider: string) => { calls.push(`discover:${provider}`); return record?.state === "installed" ? ["web_search"] : []; }),
-    update: vi.fn(async (tarball: string) => { calls.push(`update:${tarball}`); record = { ...record!, version: "0.1.1" }; }),
-    expectUpdateFailure: vi.fn(async (tarball: string) => { calls.push(`verify-failed:${tarball}`); }),
-    remove: vi.fn(async () => { calls.push("remove"); record = undefined; active = false; }),
-    picker: vi.fn(async () => record ? [record] : []),
-    activeTools: vi.fn(async () => active ? ["web_search"] : []),
-    seedLegacyOffline: vi.fn(async () => { calls.push("offline"); record = { id: "agentic-worktrees.web-search", version: "0.0.0", state: "migration_pending" }; }),
-    reconnect: vi.fn(async (tarball: string) => { calls.push(`reconnect:${tarball}`); record = { ...record!, version: "0.1.0", state: "installed" }; }),
-    rendererPayload: vi.fn(async () => JSON.stringify({ id: record?.id, state: record?.state })),
-    logs: vi.fn(async () => "capability lifecycle completed"),
-  };
+async function fixture(directory: string, name: string, version: string, verified = true) {
+  const path = join(directory, name);
+  await writeFile(path, JSON.stringify({ id: "agentic-worktrees.web-search", version, verified }));
+  return path;
 }
 
-const fixtures = {
-  v010: "/owned-temp/web-search-0.1.0.tgz",
-  v011: "/owned-temp/web-search-0.1.1.tgz",
-  failedVerifier: "/owned-temp/web-search-invalid.tgz",
-  settings: { providerMode: "auto", resultLimit: 5 },
-  secretReferences: { exaApiKey: "vault:smoke-secret" },
-  managedPath: "/private/user-data/capabilities/web-search",
-  query: "private smoke query",
-  fetchedContent: "private fetched content",
-};
+async function createHarness() {
+  const directory = await mkdtemp(join(tmpdir(), "aw-lifecycle-test-"));
+  return {
+    service: createStatefulLocalDistributionService(directory),
+    fixtures: {
+      v010: await fixture(directory, "v010.tgz", "0.1.0"),
+      v011: await fixture(directory, "v011.tgz", "0.1.1"),
+      failedVerifier: await fixture(directory, "invalid.tgz", "9.9.9", false),
+      settings: { providerMode: "auto", resultLimit: 5 },
+      secretReferences: { exaApiKey: "vault:smoke-secret" },
+      managedPath: "/private/managed/path", query: "private query", fetchedContent: "private result",
+    },
+  };
+}
 
 describe("local Web Search package lifecycle", () => {
   it("packs into an owned temporary directory and removes the tarball afterward", async () => {
     let tarball = "";
-    await withPackedWorkspace("@agentic-worktrees/web-search", async (path: string) => {
-      tarball = path;
-      await expect(access(path)).resolves.toBeUndefined();
-      expect(path).toMatch(/agentic-worktrees-web-search-0\.1\.0\.tgz$/);
-    });
+    await withPackedWorkspace("@agentic-worktrees/web-search", async (path: string) => { tarball = path; await expect(access(path)).resolves.toBeUndefined(); });
     await expect(access(tarball)).rejects.toThrow();
   }, 30_000);
 
-  it("uses local tarballs through the distribution seam for install, restart, update, rollback, removal, and migration recovery", async () => {
-    const service = createDistributionService();
-
+  it("executes the complete lifecycle against independent disk-backed state", async () => {
+    const { service, fixtures } = await createHarness();
     await runLocalWebSearchLifecycle(service, fixtures);
-
-    expect(service.calls).toEqual([
-      `install:${fixtures.v010}`,
-      "configure",
-      "restart",
-      "discover:codex",
-      "discover:opencode",
-      `update:${fixtures.v011}`,
-      `verify-failed:${fixtures.failedVerifier}`,
-      "remove",
-      "offline",
-      `reconnect:${fixtures.v010}`,
-    ]);
-    expect(await service.get()).toMatchObject({ version: "0.1.0", state: "installed" });
+    await expect(service.get()).resolves.toMatchObject({ version: "0.1.0", state: "installed" });
   });
 
-  it("fails if picker or logs expose managed paths, secrets, queries, or fetched content", () => {
-    expect(() => assertSmokeOutputIsRedacted("log vault:smoke-secret", [fixtures.secretReferences.exaApiKey])).toThrow(/Sensitive/);
-    expect(() => assertSmokeOutputIsRedacted("safe lifecycle status", Object.values(fixtures))).not.toThrow();
+  it("fails when update is a no-op instead of trusting a pre-coded outcome", async () => {
+    const { service, fixtures } = await createHarness();
+    service.update = async () => {};
+    await expect(runLocalWebSearchLifecycle(service, fixtures)).rejects.toThrow("Update did not preserve settings");
+  });
+
+  it("fails when a broken verifier artifact mutates installed state", async () => {
+    const { service, fixtures } = await createHarness();
+    service.expectUpdateFailure = async (path: string) => {
+      await writeFile(path, JSON.stringify({ id: "agentic-worktrees.web-search", version: "9.9.9", verified: true }));
+      await service.update(path);
+    };
+    await expect(runLocalWebSearchLifecycle(service, fixtures)).rejects.toThrow("Failed verification changed");
+  });
+
+  it("runs as a standalone deterministic smoke", async () => {
+    await expect(runDeterministicLocalWebSearchSmoke()).resolves.toEqual({ passed: true });
   });
 });
