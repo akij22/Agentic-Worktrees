@@ -9,7 +9,7 @@ import {
   listBundledCapabilities,
   permissionDigest,
 } from "./catalog";
-import { webSearchManifest } from "@agentic-worktrees/web-search-capability";
+import { webSearchManifest } from "@agentic-worktrees/web-search";
 
 const webEntry = createBundledCapability(webSearchManifest, ["web_search"]);
 const managedWebEntry = {
@@ -68,6 +68,34 @@ describe("CapabilityService", () => {
       .run(now, now);
   });
   afterEach(() => sqlite.close());
+  it("keeps stale session registrations visible without resolving them through the active catalog", () => {
+    const repository = new CapabilityRepository(sqlite);
+    repository.transitionSessionCapability({
+      runId: "run-1",
+      capabilityId: "agentic-worktrees.removed",
+      version: "1.0.0",
+      to: "inactive",
+    });
+    const service = new CapabilityService({
+      repository,
+      catalog: testCatalog,
+      credentials: {} as never,
+      hosts: {} as never,
+      activator: {} as never,
+      getAgentKind: vi.fn().mockResolvedValue("codex"),
+    });
+
+    expect(service.listSessionCapabilities("run-1")).toEqual([
+      expect.objectContaining({
+        capabilityId: "agentic-worktrees.removed",
+        name: "agentic-worktrees.removed",
+        version: "1.0.0",
+        state: "unavailable",
+        errorCode: "capability_not_installed",
+      }),
+    ]);
+  });
+
   it("keeps blocked managed packages visible but refuses activation before provider work", async () => {
     const entry = { ...managedWebEntry, blocked: true };
     const hosts = { setActiveCapabilities: vi.fn() };

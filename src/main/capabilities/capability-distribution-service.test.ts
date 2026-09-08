@@ -239,7 +239,7 @@ const failure = async (promise: Promise<unknown>) =>
   );
 
 describe("CapabilityDistributionService marketplace listing", () => {
-  it("reports a legacy Web Search migration as pending, not installed", async () => {
+  it("does not advertise a pending migration from fallback metadata as downloadable", async () => {
     const webDescriptor = {
       ...descriptor,
       manifest: {
@@ -287,21 +287,27 @@ describe("CapabilityDistributionService marketplace listing", () => {
       confirm: vi.fn(async () => false),
     });
 
-    expect(listed).toEqual([expect.objectContaining({
-      id: "agentic-worktrees.web-search",
-      packageName: "@agentic-worktrees/web-search",
-      version: "0.1.0",
-      installationState: "migration_pending",
-      source: "npm",
-    })]);
-    expect(lines).toEqual([
-      "@agentic-worktrees/web-search\t0.1.0\tmigration_pending",
+    expect(listed).toEqual([
+      expect.objectContaining({
+        id: "agentic-worktrees.url-fetch",
+        source: "bundled",
+        installationState: "installed",
+      }),
+      expect.objectContaining({
+        id: "agentic-worktrees.web-search",
+        source: "bundled",
+        installationState: "installed",
+      }),
     ]);
+    expect(lines).toEqual(["No managed packages installed."]);
     expect(JSON.stringify([listed, lines])).not.toContain("/private");
   });
 
-  it("returns no installed entries when the official and managed catalogs are empty", async () => {
-    expect(await setup().service.listMarketplaceCapabilities()).toEqual([]);
+  it("returns bundled entries when the official and managed catalogs are empty", async () => {
+    await expect(setup().service.listMarketplaceCapabilities()).resolves.toEqual([
+      expect.objectContaining({ id: "agentic-worktrees.url-fetch", source: "bundled" }),
+      expect.objectContaining({ id: "agentic-worktrees.web-search", source: "bundled" }),
+    ]);
   });
 });
 

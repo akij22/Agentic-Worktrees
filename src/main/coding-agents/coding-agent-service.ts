@@ -312,7 +312,7 @@ const getHarnessForInstallation = (installation: {
   return harness;
 };
 
-const getContext = (worktreeId: string): AgentWorktreeContext => {
+const getStoredContext = (worktreeId: string): AgentWorktreeContext => {
   const db = getDatabase();
   const worktree = db
     .select()
@@ -320,9 +320,6 @@ const getContext = (worktreeId: string): AgentWorktreeContext => {
     .where(eq(worktrees.id, worktreeId))
     .get();
   if (!worktree) throw new Error(`Worktree not found: ${worktreeId}`);
-  if (!existsSync(worktree.path)) {
-    throw new Error(`Worktree path is unavailable: ${worktree.path}`);
-  }
   const repository = db
     .select()
     .from(repositories)
@@ -331,6 +328,14 @@ const getContext = (worktreeId: string): AgentWorktreeContext => {
   if (!repository)
     throw new Error(`Repository not found: ${worktree.repositoryId}`);
   return { worktree, repository };
+};
+
+const getContext = (worktreeId: string): AgentWorktreeContext => {
+  const context = getStoredContext(worktreeId);
+  if (!existsSync(context.worktree.path)) {
+    throw new Error(`Worktree path is unavailable: ${context.worktree.path}`);
+  }
+  return context;
 };
 
 const getSessionRecord = (runId: string) => {
@@ -1019,8 +1024,38 @@ export const reconcileAgentSession = async (runId: string): Promise<void> => {
 export const getAgentSessionSnapshot = async (
   runId: string,
 ): Promise<AgentSessionSnapshot> => {
+  let row = getSessionRecord(runId);
+  const storedContext = getStoredContext(row.run.worktreeId);
+  if (!existsSync(storedContext.worktree.path)) {
+    setRunStatus(runId, "unavailable", "The worktree for this session is no longer available.");
+    row = getSessionRecord(runId);
+    return {
+      session: toSummary(row),
+      context: storedContext,
+      messages: getDatabase()
+        .select()
+        .from(runMessages)
+        .where(eq(runMessages.runId, runId))
+        .orderBy(runMessages.sequence)
+        .all()
+        .map((message) => ({
+          id: message.id,
+          role: message.role === "user" ? ("user" as const) : ("assistant" as const),
+          content: message.content,
+          reasoning: reasoningByRun.get(runId)?.get(message.id.slice(runId.length + 1)) ?? "",
+          tools: toolsByRun.get(runId)?.get(message.id.slice(runId.length + 1)) ?? [],
+          createdAt: message.createdAt.getTime(),
+          completedAt: message.completedAt?.getTime() ?? null,
+        })),
+      diff: getPersistedSessionDiffs(runId),
+      turnDiff: [],
+      capabilities: capabilityBridge?.listSessionCapabilities(runId) ?? [],
+      capabilityReloading: false,
+      skillInvocations: skillInvocationSource?.(runId) ?? [],
+    };
+  }
   await reconcileAgentSession(runId);
-  const row = getSessionRecord(runId);
+  row = getSessionRecord(runId);
   const context = getContext(row.run.worktreeId);
   const harness = getHarnessForInstallation(row.installation);
   const storedMessages = getDatabase()

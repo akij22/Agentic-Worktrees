@@ -5,6 +5,7 @@ import {
 } from "@agentic-worktrees/capability-sdk";
 // capability-kit:catalog-imports:start
 import { urlFetchManifest } from "@agentic-worktrees/url-fetch-capability";
+import { webSearchManifest } from "@agentic-worktrees/web-search";
 // capability-kit:catalog-imports:end
 import type {
   CapabilityDetailDto,
@@ -71,6 +72,7 @@ export function createBundledCapability(
 const bundledCapabilityEntries = [
   // capability-kit:catalog-entries:start
   createBundledCapability(urlFetchManifest, ["fetch_url"]),
+  createBundledCapability(webSearchManifest, ["web_search"]),
   // capability-kit:catalog-entries:end
 ] as const;
 const bundledCapabilities = new Map(
@@ -83,6 +85,7 @@ export function createCapabilityCatalog(
   const compose = (): readonly CapabilityCatalogEntry[] => {
     const entries: CapabilityCatalogEntry[] = [...bundledCapabilityEntries];
     for (const item of installed.list()) {
+      if (bundledCapabilities.has(item.record.itemId)) continue;
       const version = item.record.activeVersion;
       if (!version) continue;
       entries.push(

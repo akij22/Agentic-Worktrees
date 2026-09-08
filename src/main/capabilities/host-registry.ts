@@ -10,6 +10,7 @@ import {
 } from "@agentic-worktrees/capability-sdk";
 // capability-kit:host-imports:start
 import urlFetchCapability from "@agentic-worktrees/url-fetch-capability";
+import webSearchCapability from "@agentic-worktrees/web-search";
 // capability-kit:host-imports:end
 import { readContainedJson } from "../packages/bounded-file-reader";
 import { digestPackageTree } from "../packages/content-digest";
@@ -18,6 +19,7 @@ import type { CapabilityRuntimeDescriptor } from "./catalog";
 const hostedCapabilities = [
   // capability-kit:host-entries:start
   urlFetchCapability,
+  webSearchCapability,
   // capability-kit:host-entries:end
 ] as const;
 const bundled = new Map<string, CapabilityDefinition>(

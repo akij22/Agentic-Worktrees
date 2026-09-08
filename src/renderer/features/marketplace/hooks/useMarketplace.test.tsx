@@ -43,6 +43,10 @@ const detail: CapabilityDetailDto = {
   permissionDigest: "permissions",
 };
 const installedDetail = { ...detail, installationState: "installed" as const };
+const pendingDetail = {
+  ...detail,
+  installationState: "migration_pending" as const,
+};
 const item = { kind: "capability" as const, capability: detail };
 const installedItem = {
   kind: "capability" as const,
@@ -144,6 +148,13 @@ function Probe() {
       <button onClick={() => void market.select(installedItem)}>
         select installed
       </button>
+      <button
+        onClick={() =>
+          void market.select({ kind: "capability", capability: pendingDetail })
+        }
+      >
+        select pending
+      </button>
       <button onClick={() => void market.select(otherItem)}>
         select other
       </button>
@@ -181,6 +192,22 @@ async function selectInstalled() {
 }
 
 describe("useMarketplace", () => {
+  it("does not download a pending migration package when selected", async () => {
+    const mock = api();
+    installApi(mock);
+    render(<Probe />);
+    await screen.findByText("capability");
+
+    fireEvent.click(screen.getByRole("button", { name: "select pending" }));
+
+    await waitFor(() =>
+      expect(mock.capabilities.get).toHaveBeenCalledWith({
+        capabilityId: "agentic.web",
+      }),
+    );
+    expect(mock.marketplace.inspect).not.toHaveBeenCalled();
+  });
+
   it("inspects an available Official item and passes the exact install acceptance tuple", async () => {
     const mock = api();
     installApi(mock);

@@ -552,6 +552,22 @@ describe("coding-agent service routing", () => {
     );
   });
 
+  it("returns persisted session data when an obsolete worktree path is unavailable", async () => {
+    seedSession("codex-run", "codex", "codex-thread");
+    mocks.database
+      ?.update(worktrees)
+      .set({ path: "/path/that/no-longer-exists" })
+      .where(eq(worktrees.id, "worktree-1"))
+      .run();
+
+    const snapshot = await getAgentSessionSnapshot("codex-run");
+
+    expect(snapshot.session.status).toBe("unavailable");
+    expect(snapshot.context.worktree.path).toBe("/path/that/no-longer-exists");
+    expect(mocks.codex.adapter.getSession).not.toHaveBeenCalled();
+    expect(mocks.codex.adapter.getDiff).not.toHaveBeenCalled();
+  });
+
   it("does not clear a newly submitted OpenCode turn before it becomes active", async () => {
     seedSession("opencode-run", "opencode", "opencode-session");
 

@@ -122,8 +122,11 @@ const initializeCapabilities = async (): Promise<CapabilityService> => {
     ),
     lock: packageLock,
   });
+  // Web Search is shipped as a bundled capability. Keep the migration object
+  // available for compatibility with the application-services contract, but do
+  // not attempt to replace the working local runtime with an unpublished npm
+  // artifact.
   currentWebSearchMigration = webSearchMigration;
-  await webSearchMigration.reconcile(new AbortController().signal);
   const credentials = createElectronCapabilityCredentialStore(
     path.join(currentUserDataPath, "capability-credentials.bin"),
   );
@@ -144,9 +147,15 @@ const initializeCapabilities = async (): Promise<CapabilityService> => {
     runId: string,
     agentKind: import("./coding-agents/types").CodingAgentKind,
   ) => {
+    const catalogIds = new Set(
+      catalog.list().map((entry) => entry.manifest.id),
+    );
     const activeIds = repository
       .listSessionCapabilities(runId)
-      .filter((item) => item.status === "active")
+      .filter(
+        (item) =>
+          item.status === "active" && catalogIds.has(item.capabilityId),
+      )
       .map((item) => item.capabilityId);
     const settings = Object.fromEntries(
       activeIds.map((id) => [
@@ -235,17 +244,15 @@ const initializeCapabilities = async (): Promise<CapabilityService> => {
         hosts.stopHost(runId);
       },
       listSessionCapabilities: (runId) =>
-        repository.listSessionCapabilities(runId).map((record) => ({
+        service.listSessionCapabilities(runId).map((record) => ({
           id: record.capabilityId,
-          name: catalog.get(record.capabilityId).manifest.name,
+          name: record.name,
           version: record.version,
-          state: record.status,
+          state: record.state,
           ...(record.errorCode ? { errorCode: record.errorCode } : {}),
-          ...(record.activatedAt
-            ? { activatedAt: record.activatedAt.toISOString() }
-            : {}),
+          ...(record.activatedAt ? { activatedAt: record.activatedAt } : {}),
           ...(record.deactivatedAt
-            ? { deactivatedAt: record.deactivatedAt.toISOString() }
+            ? { deactivatedAt: record.deactivatedAt }
             : {}),
         })),
       isReloading: (runId) => {
@@ -273,7 +280,6 @@ const initializeCapabilities = async (): Promise<CapabilityService> => {
     credentials,
     verifier: createElectronCapabilityPackageVerifier(),
     packageLock,
-    webSearchMigration,
   });
   return service;
 };

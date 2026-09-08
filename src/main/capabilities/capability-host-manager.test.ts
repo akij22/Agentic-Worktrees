@@ -6,7 +6,7 @@ import {
 } from "./capability-host-manager";
 import type { MainToHostMessage } from "./host-protocol";
 import { createBundledCapability } from "./catalog";
-import { webSearchManifest } from "@agentic-worktrees/web-search-capability";
+import { webSearchManifest } from "@agentic-worktrees/web-search";
 
 const webEntry = createBundledCapability(webSearchManifest, ["web_search"]);
 const testCatalog = {

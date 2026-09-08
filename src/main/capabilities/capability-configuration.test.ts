@@ -1,4 +1,4 @@
-import { webSearchManifest } from "@agentic-worktrees/web-search-capability";
+import { webSearchManifest } from "@agentic-worktrees/web-search";
 import type { CapabilityManifest } from "@agentic-worktrees/capability-sdk";
 import { describe, expect, it } from "vitest";
 import { prepareCapabilityConfiguration } from "./capability-configuration";

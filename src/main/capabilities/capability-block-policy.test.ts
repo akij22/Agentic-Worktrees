@@ -13,7 +13,7 @@ import {
   toCapabilityDetailDto,
   permissionDigest,
 } from "./catalog";
-import { webSearchManifest } from "@agentic-worktrees/web-search-capability";
+import { webSearchManifest } from "@agentic-worktrees/web-search";
 
 it("projects signed active-version blocking without hiding or deleting the installed package", async () => {
   const root = await mkdtemp(join(tmpdir(), "block-policy-"));

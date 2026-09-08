@@ -48,7 +48,7 @@ import { ManagedPackageRepository } from "../packages/package-repository";
 import type { ManagedPackageLayout } from "../packages/storage-layout";
 import { OfficialCatalogService } from "../packages/catalog/official-catalog";
 import { PackageLock } from "../packages/package-lock";
-import { toCapabilitySummaryDto } from "./catalog";
+import { listBundledCapabilities, toCapabilitySummaryDto } from "./catalog";
 import { CapabilityRepository } from "./capability-repository";
 import {
   ConsentLeaseRegistry,
@@ -288,8 +288,19 @@ export class CapabilityDistributionService {
   async listMarketplaceCapabilities(): Promise<CapabilitySummaryDto[]> {
     const officialCatalog = this.deps.officialCatalog ?? new OfficialCatalogService();
     const official = await officialCatalog.load();
-    const summaries = new Map<string, CapabilitySummaryDto>();
-    for (const entry of official.snapshot.entries) {
+    const summaries = new Map<string, CapabilitySummaryDto>(
+      listBundledCapabilities().map((entry) => [
+        entry.manifest.id,
+        toCapabilitySummaryDto(entry, "available"),
+      ]),
+    );
+    // The embedded catalog is metadata for safe migration identity checks, not
+    // proof that its npm artifact is published. Only a verified remote/cache
+    // catalog may advertise downloadable packages.
+    const advertisedEntries =
+      official.source === "fallback" ? [] : official.snapshot.entries;
+    for (const entry of advertisedEntries) {
+      if (summaries.has(entry.capabilityId)) continue;
       summaries.set(
         entry.capabilityId,
         toCapabilitySummaryDto(
@@ -353,7 +364,7 @@ export class CapabilityDistributionService {
     for (const record of this.repository.list("capability")) {
       if (record.state !== "migration_pending") continue;
       const summary = summaries.get(record.itemId);
-      if (summary)
+      if (summary?.source === "npm")
         summaries.set(record.itemId, {
           ...summary,
           packageName: record.packageName,

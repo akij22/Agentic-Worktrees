@@ -7,6 +7,7 @@ const select = vi.fn();
 const setFilter = vi.fn();
 const setQuery = vi.fn();
 const installSkill = vi.fn();
+let marketplaceError: string | undefined;
 const capability = {
   id: "web",
   name: "Web Search",
@@ -43,7 +44,7 @@ vi.mock("../features/marketplace/hooks/useMarketplace", () => ({
     filter: "all",
     query: "",
     isExactSpec: false,
-    error: undefined,
+    error: marketplaceError,
     select,
     setFilter,
     setQuery,
@@ -58,6 +59,7 @@ import { Marketplace } from "./Marketplace";
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  marketplaceError = undefined;
 });
 
 describe("Marketplace", () => {
@@ -95,6 +97,18 @@ describe("Marketplace", () => {
       { target: { value: "missing" } },
     );
     expect(setQuery).toHaveBeenCalledWith("missing");
+  });
+
+  it("shows Marketplace errors without a retry action that only refreshes the list", () => {
+    marketplaceError = "The package operation could not be completed.";
+    render(
+      <MemoryRouter>
+        <Marketplace />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("alert").textContent).toContain("could not be completed");
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
 
   it("keeps the header compact before an item is selected", () => {

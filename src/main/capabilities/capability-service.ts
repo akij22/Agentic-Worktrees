@@ -144,6 +144,32 @@ export class CapabilityService implements CapabilitySessionPackageCoordinator {
     });
   }
 
+  listSessionCapabilities(runId: string): CapabilitySessionStateDto[] {
+    const catalogById = new Map(
+      this.listCatalog().map((entry) => [entry.manifest.id, entry]),
+    );
+    return this.dependencies.repository
+      .listSessionCapabilities(runId)
+      .map((record) => {
+        const entry = catalogById.get(record.capabilityId);
+        if (entry) return sessionDto(record, entry);
+        return {
+          runId: record.runId,
+          capabilityId: record.capabilityId,
+          name: record.capabilityId,
+          version: record.version,
+          state: "unavailable" as const,
+          errorCode: "capability_not_installed",
+          ...(record.activatedAt
+            ? { activatedAt: record.activatedAt.toISOString() }
+            : {}),
+          ...(record.deactivatedAt
+            ? { deactivatedAt: record.deactivatedAt.toISOString() }
+            : {}),
+        };
+      });
+  }
+
   getCapability(capabilityId: string, runId?: string): CapabilityDetailDto {
     const capability = this.getCatalog(capabilityId);
     const installation =

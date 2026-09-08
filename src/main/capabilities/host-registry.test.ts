@@ -63,8 +63,19 @@ async function managedFixture() {
 describe("host registry", () => {
   it("exposes only frozen explicit bundled IDs", () => {
     const ids = listHostedCapabilityIds();
-    expect(ids).toEqual(["agentic-worktrees.url-fetch"]);
+    expect(ids).toEqual([
+      "agentic-worktrees.url-fetch",
+      "agentic-worktrees.web-search",
+    ]);
     expect(Object.isFrozen(ids)).toBe(true);
+  });
+  it("loads the bundled Web Search runtime and tool", async () => {
+    const capability = await getHostedCapability({
+      kind: "bundled",
+      capabilityId: "agentic-worktrees.web-search",
+      version: "0.1.0",
+    });
+    expect(capability?.tools.map((tool) => tool.name)).toEqual(["web_search"]);
   });
   it("returns undefined for unknown bundled capabilities", async () => {
     await expect(

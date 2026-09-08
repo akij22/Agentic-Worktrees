@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { webSearchManifest } from "@agentic-worktrees/web-search-capability";
+import { webSearchManifest } from "@agentic-worktrees/web-search";
 import {
   createCapabilityCatalog,
   getBundledCapability,
@@ -13,6 +13,10 @@ describe("bundled capability catalog", () => {
     expect(Object.isFrozen(listed)).toBe(true);
     expect(listed.map((item) => item.manifest.id)).toEqual([
       "agentic-worktrees.url-fetch",
+      "agentic-worktrees.web-search",
+    ]);
+    expect(getBundledCapability(webSearchManifest.id).toolNames).toEqual([
+      "web_search",
     ]);
     expect(
       getBundledCapability("agentic-worktrees.url-fetch").toolNames,
@@ -68,13 +72,13 @@ describe("bundled capability catalog", () => {
     expect(JSON.stringify(dto)).not.toMatch(
       /packageRoot|manifestRelativePath|entryRelativePath|\/private\/managed|runtime/,
     );
-    expect(dto.source).toBe("npm");
+    expect(dto.source).toBe("bundled");
+    expect(catalog.get(webSearchManifest.id).runtime.kind).toBe("bundled");
   });
 
-  it.each([
-    ["ID", "agentic-worktrees.url-fetch", "managed_tool"],
-    ["tool", "test.managed", "fetch_url"],
-  ])("rejects a managed %s collision", (_label, id, toolName) => {
+  it("rejects a managed tool collision", () => {
+    const id = "test.managed";
+    const toolName = "fetch_url";
     const bundled = getBundledCapability("agentic-worktrees.url-fetch");
     const catalog = createCapabilityCatalog({
       list: () => [
@@ -104,7 +108,7 @@ describe("bundled capability catalog", () => {
       ],
       refresh: async () => undefined,
     } as never);
-    expect(() => catalog.list()).toThrow(/Duplicate capability/);
+    expect(() => catalog.list()).toThrow(/Duplicate capability tool/);
   });
 
   it("rejects unknown IDs without echoing them", () => {

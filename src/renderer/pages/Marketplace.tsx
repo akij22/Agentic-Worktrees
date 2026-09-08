@@ -149,14 +149,6 @@ export function Marketplace() {
             <p role="alert" className="text-xs text-destructive">
               {market.error}
             </p>
-            <Button
-              size="sm"
-              variant="outline"
-              className="mt-2"
-              onClick={() => void market.refresh()}
-            >
-              Retry
-            </Button>
           </div>
         ) : null}
       </aside>
