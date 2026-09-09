@@ -85,19 +85,26 @@ typings/
 # Webpack
 .webpack/
 
-# Vite
+# Vite and publishable workspace builds
 .vite/
+packages/*/dist/
+capabilities/*/dist/
 
 # Electron-Forge
 out/
 
 # Superpowers planning artifacts
 docs/superpowers/
-.superpowers/sdd
+.superpowers/
+superpowers/
 .worktrees/
 
 # Local product exploration
 docs/cross-worktree-conflicts-product-ideas.md
 
-# Local agent skills
+# Local agent skills and tooling artifacts
 .agents/
+.hallmark/
+.ralph/
+graphify-out/
+/skills/ui-check/

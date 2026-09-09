@@ -9,6 +9,8 @@ import {
 import { realpathSync, statSync } from "node:fs";
 import { IPC_CHANNELS } from "../../shared/ipc/channels";
 import {
+	capabilityChangedEventSchema,
+	capabilityDistributionProgressSchema,
 	codingAgentAccountUsageRequestSchema,
 	codingAgentModelsRequestSchema,
 	codingAgentPermissionResponseSchema,
@@ -104,6 +106,54 @@ import {
 	setAgentSessionModel,
 	subscribeToAgentEvents,
 } from "../coding-agents/coding-agent-service";
+import type { CapabilityService } from "../capabilities/capability-service";
+import { createCapabilityHandlers } from "./capability-handlers";
+import type { SkillService } from "../skills/skill-service";
+import { createSkillHandlers } from "./skill-handlers";
+import type { CapabilityDistributionService } from "../capabilities/capability-distribution-service";
+import { createMarketplaceHandlers } from "./marketplace-handlers";
+import { MarketplaceEventSubscription } from "./marketplace-event-subscription";
+
+let marketplaceDistribution: CapabilityDistributionService | null = null;
+const marketplaceEvents = new MarketplaceEventSubscription();
+export const configureMarketplaceIpc = (service: CapabilityDistributionService | null): void => {
+	marketplaceDistribution = service;
+	marketplaceEvents.configure(service, (event) => {
+		if (!service || marketplaceDistribution !== service) return;
+		try {
+			const publicEvent = capabilityDistributionProgressSchema.parse(event);
+			for (const window of BrowserWindow.getAllWindows()) window.webContents.send(IPC_CHANNELS.MARKETPLACE_PACKAGE_CHANGED, publicEvent);
+			if (publicEvent.status === "completed" && publicEvent.capabilityId && ["install", "update", "remove"].includes(publicEvent.action)) {
+				const catalogEvent = capabilityChangedEventSchema.parse({
+				scope: "catalog",
+				capabilityId: publicEvent.capabilityId,
+				change: publicEvent.action === "install" ? "installed" : publicEvent.action === "update" ? "updated" : "removed",
+				updatedAt: publicEvent.updatedAt,
+			});
+				for (const window of BrowserWindow.getAllWindows()) window.webContents.send(IPC_CHANNELS.CAPABILITY_CHANGED, catalogEvent);
+			}
+		} catch {
+			console.error("marketplace_event_invalid");
+		}
+	});
+};
+
+let skillService: SkillService | null = null;
+export const configureSkillIpc = (service:SkillService|null):void => { skillService=service; };
+const requireSkillService=():SkillService=>{ if(!skillService)throw new Error("Skill service is unavailable."); return skillService; };
+const skillHandlers=()=>createSkillHandlers(requireSkillService(),{chooseDirectory:async()=>{
+	const focused=BrowserWindow.getFocusedWindow();
+	const options={properties:["openDirectory"]} as OpenDialogOptions;
+	const result=focused?await dialog.showOpenDialog(focused,options):await dialog.showOpenDialog(options);
+	return result.canceled?null:(result.filePaths[0]??null);
+}});
+
+let capabilityService: CapabilityService | null = null;
+export const configureCapabilityIpc = (service: CapabilityService | null): void => { capabilityService = service; };
+const requireCapabilityService = (): CapabilityService => {
+	if (!capabilityService) throw new Error("Capability service is unavailable.");
+	return capabilityService;
+};
 
 const requireAuthenticated =
 	<Arguments extends unknown[], Result>(
@@ -400,6 +450,17 @@ const handleWorkspaceGitOpenPullRequest = async (
 	return result;
 };
 
+const capabilityHandlers = () => createCapabilityHandlers(requireCapabilityService());
+const requireMarketplaceDistribution = (): CapabilityDistributionService => {
+	if (!marketplaceDistribution) throw new Error("Marketplace service is unavailable.");
+	return marketplaceDistribution;
+};
+const handleCapabilityList = (_event: IpcMainInvokeEvent, rawRequest: unknown) => capabilityHandlers().list(rawRequest);
+const handleCapabilityGet = (_event: IpcMainInvokeEvent, rawRequest: unknown) => capabilityHandlers().get(rawRequest);
+const handleCapabilityConfigure = (_event: IpcMainInvokeEvent, rawRequest: unknown) => capabilityHandlers().configure(rawRequest);
+const handleCapabilityActivate = (_event: IpcMainInvokeEvent, rawRequest: unknown) => capabilityHandlers().activate(rawRequest);
+const handleCapabilityDeactivate = (_event: IpcMainInvokeEvent, rawRequest: unknown) => capabilityHandlers().deactivate(rawRequest);
+
 const handleCodingAgentSelectExecutable = async (
 	_event: IpcMainInvokeEvent,
 	rawRequest: unknown,
@@ -494,11 +555,11 @@ const handleCodingAgentSessionSend = async (
 	rawRequest: unknown,
 ) => {
 	const request = codingAgentSessionSendRequestSchema.parse(rawRequest);
-	await sendAgentMessage(
-		request.runId,
-		request.content,
-		request.reasoningVariant,
-	);
+	if (request.skillInvocation !== undefined) {
+		await requireSkillService().invokeSkill({...request.skillInvocation,runId:request.runId,...(request.reasoningVariant?{reasoningVariant:request.reasoningVariant}:{})});
+	} else {
+		await sendAgentMessage(request.runId,{content:request.content},request.reasoningVariant);
+	}
 };
 
 const handleCodingAgentSessionAbort = async (
@@ -620,7 +681,43 @@ const handleIntelligenceIntegrationOpen = async (
 	await openEditor(request.editorId, session.integrationPath);
 };
 
+type MarketplaceHandlerName = Exclude<keyof ReturnType<typeof createMarketplaceHandlers>, "event">;
+const invokeMarketplace = (
+	name: MarketplaceHandlerName,
+	raw: unknown,
+	unavailableCode: string,
+): unknown => {
+	try {
+		return createMarketplaceHandlers(
+			requireMarketplaceDistribution(),
+			requireSkillService(),
+		)[name](raw);
+	} catch {
+		const error = Object.assign(new Error(unavailableCode), { code: unavailableCode });
+		error.stack = undefined;
+		return Promise.reject(Object.freeze(error));
+	}
+};
+
 export const registerIpcHandlers = (): void => {
+	ipcMain.handle(IPC_CHANNELS.SKILL_LIST,()=>skillHandlers().list());
+	ipcMain.handle(IPC_CHANNELS.SKILL_GET,(_event,raw)=>skillHandlers().get(raw));
+	ipcMain.handle(IPC_CHANNELS.SKILL_INSTALL,(_event,raw)=>skillHandlers().install(raw));
+	ipcMain.handle(IPC_CHANNELS.SKILL_REMOVE,(_event,raw)=>skillHandlers().remove(raw));
+	ipcMain.handle(IPC_CHANNELS.CAPABILITY_LIST, handleCapabilityList);
+	ipcMain.handle(IPC_CHANNELS.CAPABILITY_GET, handleCapabilityGet);
+	ipcMain.handle(IPC_CHANNELS.CAPABILITY_CONFIGURE, handleCapabilityConfigure);
+	ipcMain.handle(IPC_CHANNELS.CAPABILITY_ACTIVATE, handleCapabilityActivate);
+	ipcMain.handle(IPC_CHANNELS.CAPABILITY_DEACTIVATE, handleCapabilityDeactivate);
+	ipcMain.handle(IPC_CHANNELS.MARKETPLACE_LIST, (_event, raw) => invokeMarketplace("list", raw, "package_sync_failed"));
+	ipcMain.handle(IPC_CHANNELS.MARKETPLACE_INSPECT, (_event, raw) => invokeMarketplace("inspect", raw, "package_source_invalid"));
+	ipcMain.handle(IPC_CHANNELS.MARKETPLACE_INSTALL, (_event, raw) => invokeMarketplace("install", raw, "package_install_failed"));
+	ipcMain.handle(IPC_CHANNELS.MARKETPLACE_CHECK_UPDATES, (_event, raw) => invokeMarketplace("checkUpdates", raw, "package_download_failed"));
+	ipcMain.handle(IPC_CHANNELS.MARKETPLACE_UPDATE, (_event, raw) => invokeMarketplace("update", raw, "package_update_failed"));
+	ipcMain.handle(IPC_CHANNELS.MARKETPLACE_INSPECT_REMOVAL, (_event, raw) => invokeMarketplace("inspectRemoval", raw, "package_remove_failed"));
+	ipcMain.handle(IPC_CHANNELS.MARKETPLACE_REMOVE, (_event, raw) => invokeMarketplace("remove", raw, "package_remove_failed"));
+	ipcMain.handle(IPC_CHANNELS.MARKETPLACE_CANCEL, (_event, raw) => invokeMarketplace("cancel", raw, "package_sync_failed"));
+	ipcMain.handle(IPC_CHANNELS.MARKETPLACE_RETRY_PENDING_MIGRATIONS, (_event, raw) => invokeMarketplace("retryPendingMigrations", raw, "package_sync_failed"));
 	ipcMain.handle(IPC_CHANNELS.GITHUB_AUTH_STATUS, () =>
 		authStatusResponse(() => githubAuthService.getStatus()),
 	);
@@ -857,6 +954,13 @@ export const registerIpcHandlers = (): void => {
 				publicStatus,
 			);
 		}
+	});
+	skillService?.subscribeToSkillEvents((event)=>{
+		for(const window of BrowserWindow.getAllWindows())window.webContents.send(IPC_CHANNELS.SKILL_CHANGED,event);
+	});
+	capabilityService?.subscribeToCapabilityEvents((event) => {
+		const publicEvent = capabilityChangedEventSchema.parse(event);
+		for (const window of BrowserWindow.getAllWindows()) window.webContents.send(IPC_CHANNELS.CAPABILITY_CHANGED, publicEvent);
 	});
 	subscribeToAgentEvents((event) => {
 		if (event.runId) intelligenceService.scheduleRefreshForRun(event.runId);

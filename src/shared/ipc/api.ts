@@ -1,6 +1,13 @@
 import type { Repository, Worktree } from "../db/schema";
 import type {
 	BranchDto,
+	CapabilityActivateRequest,
+	CapabilityChangedEventDto,
+	CapabilityConfigureRequest,
+	CapabilityDeactivateRequest,
+	CapabilityDetailDto,
+	CapabilitySessionStateDto,
+	CapabilitySummaryDto,
 	CodingAgentAccountUsageDto,
 	CodingAgentKindDto,
 	CodingAgentModelDto,
@@ -27,7 +34,19 @@ import type {
 	WorkspaceGitStatusDto,
 	WorkspacePullRequestResultDto,
 	WorkspaceTerminalEventDto,
+	SkillChangedEventDto,
+	MarketplaceItemDto,
+	PackageInspectRequest,
+	PackageInstallRequest,
+	PackageUpdateRequest,
+	PackageRemoveRequest,
+	PackageRemovalInspectRequest,
+	CapabilityPackageInspectionDto,
+	CapabilityRemovalInspection,
+	CapabilityUpdateDto,
+	CapabilityDistributionProgress,
 } from "./schemas";
+import type { SkillDetailDto, SkillSummaryDto } from "../skills/schemas";
 
 export interface Api {
 	github: {
@@ -176,6 +195,33 @@ export interface Api {
 			listener: (event: ConflictResolutionSessionEventDto) => void,
 		) => () => void;
 	};
+	skills: {
+		list: () => Promise<SkillSummaryDto[]>;
+		get: (request: { skillId: string }) => Promise<SkillDetailDto>;
+		install: () => Promise<SkillDetailDto | null>;
+		remove: (request: { skillId: string }) => Promise<void>;
+		onChanged: (listener: (event: SkillChangedEventDto) => void) => () => void;
+	};
+	marketplace: {
+		list: () => Promise<MarketplaceItemDto[]>;
+		inspect: (request: PackageInspectRequest) => Promise<CapabilityPackageInspectionDto>;
+		install: (request: PackageInstallRequest) => Promise<CapabilityDetailDto>;
+		checkUpdates: (request?: { packageName?: string }) => Promise<CapabilityUpdateDto[]>;
+		update: (request: PackageUpdateRequest) => Promise<CapabilityDetailDto>;
+		inspectRemoval: (request: PackageRemovalInspectRequest) => Promise<CapabilityRemovalInspection>;
+		remove: (request: PackageRemoveRequest) => Promise<void>;
+		cancel: (request: { operationId: string }) => Promise<void>;
+		retryPendingMigrations: () => Promise<void>;
+		onPackageChanged: (listener: (event: CapabilityDistributionProgress) => void) => () => void;
+	};
+	capabilities: {
+		list: (request?: { runId?: string }) => Promise<CapabilitySummaryDto[]>;
+		get: (request: { capabilityId: string; runId?: string }) => Promise<CapabilityDetailDto>;
+		configure: (request: CapabilityConfigureRequest) => Promise<CapabilityDetailDto>;
+		activate: (request: CapabilityActivateRequest) => Promise<CapabilitySessionStateDto>;
+		deactivate: (request: CapabilityDeactivateRequest) => Promise<CapabilitySessionStateDto>;
+		onChanged: (listener: (event: CapabilityChangedEventDto) => void) => () => void;
+	};
 	codingAgent: {
 		selectExecutable: (request: {
 			agentKind: CodingAgentKindDto;
@@ -206,11 +252,10 @@ export interface Api {
 		getAccountUsage: (request: {
 			runId: string;
 		}) => Promise<CodingAgentAccountUsageDto>;
-		sendMessage: (request: {
-			runId: string;
-			content: string;
-			reasoningVariant?: string;
-		}) => Promise<void>;
+		sendMessage: (request:
+			| { runId: string; content: string; reasoningVariant?: string }
+			| { runId: string; skillInvocation: { skillId: string; version: string; arguments?: string }; reasoningVariant?: string }
+		) => Promise<void>;
 		compactSession: (request: { runId: string }) => Promise<void>;
 		abortSession: (request: { runId: string }) => Promise<void>;
 		respondPermission: (request: {

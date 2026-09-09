@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+	capabilityActivateRequestSchema,
+	capabilityConfigureRequestSchema,
+	capabilityChangedEventSchema,
+	capabilityDetailSchema,
 	codingAgentAccountUsageSchema,
 	codingAgentKindSchema,
 	codingAgentModelsRequestSchema,
@@ -21,6 +25,12 @@ import {
 	workspaceFileSearchResponseSchema,
 	workspacePullRequestRequestSchema,
 	workspaceTerminalResizeRequestSchema,
+	codingAgentSessionSendRequestSchema,
+	skillInstallRequestSchema,
+	skillRemoveRequestSchema,
+	marketplaceItemSchema,
+	packageInspectRequestSchema,
+	packageRemoveRequestSchema,
 } from "./schemas";
 
 describe("GitHub authentication IPC schemas", () => {
@@ -472,4 +482,71 @@ describe("workspace IPC schemas", () => {
 			baseBranch: "main",
 		});
 	});
+});
+
+
+describe("package lifecycle IPC schemas", () => {
+	it("strips local paths from inspection requests", () => {
+		expect(packageInspectRequestSchema.parse({
+			sourceSpec: "@agentic-worktrees/web-search@0.1.0",
+			officialCapabilityId: "agentic-worktrees.web-search",
+			archivePath: "/must/not/cross/ipc",
+		})).toEqual({
+			intent: "install",
+			sourceSpec: "@agentic-worktrees/web-search@0.1.0",
+			officialCapabilityId: "agentic-worktrees.web-search",
+		});
+	});
+
+	it("rejects unknown removal request fields", () => {
+		expect(packageRemoveRequestSchema.safeParse({
+			inspectionId: "inspection-1",
+			packageName: "@agentic-worktrees/web-search",
+			acceptedActiveVersion: "0.1.0",
+			acceptedActiveRunCount: 2,
+			installDirectory: "/private/path",
+		}).success).toBe(false);
+	});
+});
+
+describe("capability IPC schemas", () => {
+	it("validates activation and keyless configuration requests", () => {
+		expect(capabilityActivateRequestSchema.parse({ runId: "run-1", capabilityId: "agentic-worktrees.web-search" })).toEqual({ runId: "run-1", capabilityId: "agentic-worktrees.web-search" });
+		expect(capabilityConfigureRequestSchema.parse({
+			capabilityId: "agentic-worktrees.web-search",
+			acceptedPermissionDigest: "digest",
+			settings: { providerMode: "auto", resultLimit: 5 },
+			secrets: { exaApiKey: null },
+			bearerToken: "must-not-cross-ipc",
+		})).toEqual({
+			capabilityId: "agentic-worktrees.web-search",
+			acceptedPermissionDigest: "digest",
+			settings: { providerMode: "auto", resultLimit: 5 },
+			secrets: { exaApiKey: null },
+		});
+		expect(() => capabilityConfigureRequestSchema.parse({
+			capabilityId: "agentic-worktrees.url-fetch",
+			acceptedPermissionDigest: "digest",
+			settings: { nested: { unsafe: true } },
+			secrets: {},
+		})).toThrow();
+	});
+
+	it("strips private fields from capability details", () => {
+		const parsed = capabilityDetailSchema.parse({ id: "agentic-worktrees.web-search", name: "Web Search", version: "0.1.0", description: "Search", category: "web-browser", compatibility: { codex: "supported", opencode: "supported" }, state: "ready", secretConfigured: false, installationState: "installed", source: "bundled", trust: "built-in", activeRunCount: 0, sdkVersion: "^0.1.0", author: { name: "Agentic Worktrees" }, license: "MIT", permissions: { network: [], secrets: [] }, settings: [], reviewStatus: "bundled-reviewed", providedTools: ["web_search"], permissionDigest: "digest", bearerToken: "private" });
+		expect(parsed).not.toHaveProperty("bearerToken");
+	});
+});
+
+describe("skill IPC schemas",()=>{
+ it("accepts exactly one send variant",()=>{expect(codingAgentSessionSendRequestSchema.parse({runId:"r",skillInvocation:{skillId:"review",version:"1"}})).toHaveProperty("skillInvocation");expect(()=>codingAgentSessionSendRequestSchema.parse({runId:"r",content:"x",skillInvocation:{skillId:"review",version:"1"}})).toThrow();});
+ it("strictly rejects renderer install paths",()=>expect(()=>skillInstallRequestSchema.parse({path:"/secret"})).toThrow());
+ it("accepts only a valid removal ID",()=>{expect(skillRemoveRequestSchema.parse({skillId:"security-review"})).toEqual({skillId:"security-review"});expect(()=>skillRemoveRequestSchema.parse({skillId:"BAD"})).toThrow();});
+ it("keeps marketplace item discriminants",()=>expect(marketplaceItemSchema.parse({kind:"skill",skill:{id:"review",name:"review",description:"Review",version:"1",source:"local",compatibility:{codex:"supported",opencode:"supported"},installationState:"installed",automaticInvocation:true}}).kind).toBe("skill"));
+ it("validates strict session and catalog capability events",()=>{
+  expect(capabilityChangedEventSchema.parse({scope:"session",runId:"run-1",capabilityId:"agentic-worktrees.web-search",state:"active",updatedAt:"2026-09-02T00:00:00.000Z"}).scope).toBe("session");
+  expect(capabilityChangedEventSchema.parse({scope:"catalog",capabilityId:"agentic-worktrees.web-search",change:"updated",updatedAt:"2026-09-02T00:00:00.000Z"}).scope).toBe("catalog");
+  expect(()=>capabilityChangedEventSchema.parse({scope:"catalog",runId:"run-1",capabilityId:"agentic-worktrees.web-search",change:"updated",updatedAt:"2026-09-02T00:00:00.000Z"})).toThrow();
+  expect(()=>capabilityChangedEventSchema.parse({scope:"session",capabilityId:"agentic-worktrees.web-search",state:"active",updatedAt:"2026-09-02T00:00:00.000Z"})).toThrow();
+ });
 });

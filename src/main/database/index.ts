@@ -1,12 +1,14 @@
 import type Database from 'better-sqlite3';
+import { ManagedPackageRepository } from '../packages/package-repository';
 import { getSqlite } from './client';
-import { bootstrapSchemaSql } from './bootstrap';
+import { bootstrapSchemaSql, managedPackageSchemaStatements } from './bootstrap';
 
 type TableInfoRow = {
   name: string;
 };
 
 export const applyDatabaseUpgrades = (sqlite: Database.Database): void => {
+	sqlite.exec(managedPackageSchemaStatements.join(";\n"));
 	const worktreeColumns = sqlite
 		.prepare("PRAGMA table_info(worktrees)")
 		.all() as TableInfoRow[];
@@ -36,4 +38,6 @@ export const initDatabase = (): void => {
   const sqlite = getSqlite();
   sqlite.exec(bootstrapSchemaSql);
   applyDatabaseUpgrades(sqlite);
+  // Quarantine incomplete updates before any catalog or host is constructed.
+  new ManagedPackageRepository(sqlite).quarantineUpdateRecoveries();
 };

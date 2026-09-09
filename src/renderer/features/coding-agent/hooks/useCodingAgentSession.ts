@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
+  CapabilitySummaryDto,
   CodingAgentDiffDto,
   CodingAgentModelDto,
   CodingAgentSessionSnapshotDto,
@@ -10,12 +11,15 @@ import {
   nextChangesSummaryUpdate,
 } from "../lib/changes-summary";
 import type { PendingPermission } from "../types";
+import type { SkillInvocationRequest, SkillSummaryDto } from "../../../../shared/skills/schemas";
 import { getAgentDisplay } from "../lib/agent-display";
 import { CoalescingTaskQueue } from "../lib/coalescing-task-queue";
 
 export const useCodingAgentSession = (runId: string) => {
   const [snapshot, setSnapshot] = useState<CodingAgentSessionSnapshotDto>();
   const [models, setModels] = useState<CodingAgentModelDto[]>([]);
+  const [capabilityLibrary, setCapabilityLibrary] = useState<CapabilitySummaryDto[]>([]);
+  const [skillLibrary, setSkillLibrary] = useState<SkillSummaryDto[]>([]);
   const [modelKey, setModelKey] = useState("");
   const [reasoningVariant, setReasoningVariant] = useState("");
   const [loadingModels, setLoadingModels] = useState(false);
@@ -46,6 +50,8 @@ export const useCodingAgentSession = (runId: string) => {
     agentRef.current = { kind: "", name: "coding agent" };
     setSnapshot(undefined);
     setModels([]);
+    setCapabilityLibrary([]);
+    setSkillLibrary([]);
     setModelKey("");
     setReasoningVariant("");
     setLoadingModels(false);
@@ -106,7 +112,21 @@ export const useCodingAgentSession = (runId: string) => {
   );
   useEffect(() => {
     void load();
-    return window.api.codingAgent.onEvent((event) => {
+    const capabilityApi = window.api.capabilities;
+    void capabilityApi?.list({ runId }).then(setCapabilityLibrary).catch(() => setError("Could not load chat capabilities."));
+    const unsubscribeCapabilities = capabilityApi?.onChanged((event) => {
+      if (event.scope === "catalog") {
+        void capabilityApi.list({ runId }).then(setCapabilityLibrary).catch(() => undefined);
+        return;
+      }
+      if (event.runId !== runId) return;
+      void load();
+      void capabilityApi.list({ runId }).then(setCapabilityLibrary).catch(() => undefined);
+    }) ?? (() => undefined);
+    const loadSkills=async()=>{const requestedRunId=runId;try{const skills=await window.api.skills.list();if(runIdRef.current===requestedRunId)setSkillLibrary(skills);}catch{if(runIdRef.current===requestedRunId)setError("Could not load installed skills.");}};
+    void loadSkills();
+    const unsubscribeSkills=window.api.skills.onChanged(()=>{void loadSkills();});
+    const unsubscribeAgent = window.api.codingAgent.onEvent((event) => {
       if (event.runId === null && event.type === "server.exit") {
         const eventAgentKind =
           typeof event.payload === "object" &&
@@ -157,6 +177,7 @@ export const useCodingAgentSession = (runId: string) => {
       )
         void load();
     });
+    return () => { unsubscribeAgent(); unsubscribeCapabilities(); unsubscribeSkills(); };
   }, [load, runId]);
   useEffect(() => {
     if (!snapshot) return;
@@ -213,27 +234,22 @@ export const useCodingAgentSession = (runId: string) => {
     }
   }, [snapshot]);
   const send = useCallback(
-    async (content: string) => {
-      if (!content.trim()) return;
+    async (turn: string | { skillInvocation: SkillInvocationRequest }): Promise<boolean> => {
+      const request = typeof turn === "string" ? { content: turn.trim() } : turn;
+      if ("content" in request && !request.content) return false;
       setSending(true);
       setChangesSummary(undefined);
       setSelectedSummaryFile(undefined);
       try {
-        await window.api.codingAgent.sendMessage({
-          runId,
-          content,
-          reasoningVariant: reasoningVariant || undefined,
-        });
-        // Arm the completion detector even if no busy snapshot is observed.
+        await window.api.codingAgent.sendMessage({ runId, ...request, ...(reasoningVariant ? { reasoningVariant } : {}) });
         wasBusyRef.current = true;
-        setActivity(
-          getAgentDisplay(snapshot?.session.agentName ?? agentRef.current.name)
-            .working,
-        );
+        setActivity(getAgentDisplay(snapshot?.session.agentName ?? agentRef.current.name).working);
         await load();
+        return true;
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause));
         setSending(false);
+        return false;
       }
     },
     [load, reasoningVariant, runId, snapshot?.session.agentName],
@@ -293,6 +309,15 @@ export const useCodingAgentSession = (runId: string) => {
     },
     [permission, runId],
   );
+  const activateCapability = useCallback(async (capabilityId: string) => {
+    await window.api.capabilities.activate({ runId, capabilityId });
+    await load();
+  }, [load, runId]);
+  const deactivateCapability = useCallback(async (capabilityId: string) => {
+    await window.api.capabilities.deactivate({ runId, capabilityId });
+    await load();
+  }, [load, runId]);
+  const retryCapability = activateCapability;
   const dismissChangesSummary = useCallback(() => {
     setChangesSummary(undefined);
     setSelectedSummaryFile(undefined);
@@ -303,6 +328,10 @@ export const useCodingAgentSession = (runId: string) => {
   return {
     snapshot,
     models,
+    capabilities: snapshot?.capabilities ?? [],
+    capabilityLibrary,
+    skillLibrary,
+    capabilityReloading: snapshot?.capabilityReloading ?? false,
     modelKey,
     reasoningVariant,
     loadingModels,
@@ -321,6 +350,9 @@ export const useCodingAgentSession = (runId: string) => {
     changeModel,
     compact,
     respondPermission,
+    activateCapability,
+    deactivateCapability,
+    retryCapability,
     dismissChangesSummary,
     selectSummaryFile,
   };

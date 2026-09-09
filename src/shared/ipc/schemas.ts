@@ -1,5 +1,47 @@
 import { z } from "zod";
 import type { Repository, Worktree } from "../db/schema";
+import { codingAgentTurnRequestSchema, skillDetailSchema, skillIdSchema, skillSummarySchema } from "../skills/schemas";
+import {
+	capabilityDetailSchema,
+	capabilityStateSchema,
+	capabilitySummarySchema,
+} from "../capabilities/schemas";
+export { capabilityDetailSchema, capabilityStateSchema, capabilitySummarySchema } from "../capabilities/schemas";
+export type { CapabilityDetailDto, CapabilityStateDto, CapabilitySummaryDto } from "../capabilities/schemas";
+import {
+	packageInspectRequestSchema,
+	packageInstallRequestSchema,
+	packageUpdateRequestSchema,
+	packageRemoveRequestSchema,
+	packageRemovalInspectRequestSchema,
+	capabilityRemovalInspectionSchema,
+	capabilityPackageInspectionSchema,
+	packageNameSchema,
+	capabilityUpdateSchema,
+	capabilityDistributionProgressSchema,
+} from "../packages/schemas";
+export {
+	packageInspectRequestSchema,
+	packageInstallRequestSchema,
+	packageUpdateRequestSchema,
+	packageRemoveRequestSchema,
+	packageRemovalInspectRequestSchema,
+	capabilityRemovalInspectionSchema,
+	capabilityPackageInspectionSchema,
+	capabilityUpdateSchema,
+	capabilityDistributionProgressSchema,
+};
+export type {
+	PackageInspectRequest,
+	PackageInstallRequest,
+	PackageUpdateRequest,
+	PackageRemoveRequest,
+	PackageRemovalInspectRequest,
+	CapabilityRemovalInspection,
+	CapabilityPackageInspectionDto,
+	CapabilityUpdateDto,
+	CapabilityDistributionProgress,
+} from "../packages/schemas";
 
 export const githubAuthStateSchema = z.enum([
 	"loading",
@@ -416,12 +458,22 @@ export const codingAgentDiffSchema = z.object({
 
 export type CodingAgentDiffDto = z.infer<typeof codingAgentDiffSchema>;
 
+export const skillInvocationSnapshotSchema=z.object({id:z.string(),skillId:skillIdSchema,name:z.string(),version:z.string(),mode:z.enum(["explicit","automatic"]),status:z.enum(["requested","loaded","failed"]),errorCode:z.string().optional(),requestedAt:z.string(),loadedAt:z.string().optional(),failedAt:z.string().optional()});
+export type SkillInvocationSnapshotDto=z.infer<typeof skillInvocationSnapshotSchema>;
+
 export const codingAgentSessionSnapshotSchema = z.object({
 	session: codingAgentSessionSchema,
 	context: codingAgentWorktreeContextSchema,
 	messages: z.array(codingAgentMessageSchema),
 	diff: z.array(codingAgentDiffSchema),
 	turnDiff: z.array(codingAgentDiffSchema),
+	capabilities: z.array(z.object({
+		id: z.string(), name: z.string(), version: z.string(),
+		state: z.enum(["available", "needs_setup", "ready", "pending_activation", "reloading", "active", "pending_deactivation", "activation_failed", "inactive", "unavailable"]),
+		errorCode: z.string().optional(), activatedAt: z.string().optional(), deactivatedAt: z.string().optional(),
+	})).default([]),
+	capabilityReloading: z.boolean().default(false),
+	skillInvocations:z.array(skillInvocationSnapshotSchema).optional(),
 });
 
 export type CodingAgentSessionSnapshotDto = z.infer<
@@ -500,11 +552,7 @@ export const codingAgentAccountUsageRequestSchema = z.object({
 	runId: z.string().min(1),
 });
 
-export const codingAgentSessionSendRequestSchema = z.object({
-	runId: z.string().min(1),
-	content: z.string().trim().min(1).max(100_000),
-	reasoningVariant: z.string().trim().min(1).max(80).optional(),
-});
+export const codingAgentSessionSendRequestSchema = codingAgentTurnRequestSchema;
 
 export const codingAgentSessionAbortRequestSchema = z.object({
 	runId: z.string().min(1),
@@ -840,3 +888,65 @@ export type WorktreeCreateResponse = z.infer<
 	typeof worktreeCreateResponseSchema
 >;
 export type WorktreeListRequest = z.infer<typeof worktreeListRequestSchema>;
+
+
+export const skillListResponseSchema = skillSummarySchema.array();
+export const skillGetRequestSchema = z.object({ skillId: skillIdSchema }).strict();
+export const skillInstallRequestSchema = z.object({}).strict();
+export const skillRemoveRequestSchema = z.object({ skillId: skillIdSchema }).strict();
+export const skillChangedEventSchema = z.object({
+	skillId: skillIdSchema,
+	kind: z.enum(["installed", "removed", "changed"]),
+	timestamp: z.string().datetime(),
+});
+export type SkillChangedEventDto = z.infer<typeof skillChangedEventSchema>;
+export const marketplaceItemSchema = z.union([
+	z.object({ kind: z.literal("capability"), capability: capabilitySummarySchema }),
+	z.object({ kind: z.literal("skill"), skill: skillSummarySchema }),
+]);
+export type MarketplaceItemDto = z.infer<typeof marketplaceItemSchema>;
+export { skillDetailSchema, skillSummarySchema };
+
+export const capabilitySessionStateSchema = z.object({
+	runId: z.string().min(1),
+	capabilityId: z.string().min(1),
+	name: z.string(),
+	version: z.string(),
+	state: capabilityStateSchema,
+	errorCode: z.string().optional(),
+	activatedAt: z.string().optional(),
+	deactivatedAt: z.string().optional(),
+});
+export type CapabilitySessionStateDto = z.infer<typeof capabilitySessionStateSchema>;
+
+const capabilityIdSchema = z.string().regex(/^[a-z0-9]+(?:[.-][a-z0-9]+)*$/);
+export const capabilityListRequestSchema = z.object({ runId: z.string().trim().min(1).optional() }).optional().default({});
+export const capabilityGetRequestSchema = z.object({ capabilityId: capabilityIdSchema, runId: z.string().trim().min(1).optional() });
+const capabilitySettingValueSchema = z.union([
+	z.string().max(4_096),
+	z.number().finite(),
+	z.boolean(),
+]);
+const capabilitySecretValueSchema = z.union([z.string().max(4_096), z.null()]);
+const capabilityConfigurationKeySchema = z.string().regex(/^[a-z][A-Za-z0-9]{0,63}$/);
+export const capabilityConfigureRequestSchema = z.object({
+	capabilityId: capabilityIdSchema,
+	acceptedPermissionDigest: z.string().min(1),
+	settings: z.record(capabilityConfigurationKeySchema, capabilitySettingValueSchema),
+	secrets: z.record(capabilityConfigurationKeySchema, capabilitySecretValueSchema).default({}),
+});
+export const capabilityActivateRequestSchema = z.object({ runId: z.string().trim().min(1), capabilityId: capabilityIdSchema });
+export const capabilityDeactivateRequestSchema = capabilityActivateRequestSchema;
+export const capabilityChangedEventSchema = z.discriminatedUnion("scope", [
+	z.object({ scope: z.literal("session"), runId: z.string().trim().min(1), capabilityId: capabilityIdSchema, state: capabilityStateSchema, updatedAt: z.string().datetime() }).strict(),
+	z.object({ scope: z.literal("catalog"), capabilityId: capabilityIdSchema, change: z.enum(["installed", "updated", "removed", "blocked"]), updatedAt: z.string().datetime() }).strict(),
+]);
+export type CapabilityChangedEventDto = z.infer<typeof capabilityChangedEventSchema>;
+
+export const marketplaceListRequestSchema = z.object({}).strict();
+export const marketplaceCheckUpdatesRequestSchema = z.object({ packageName: packageNameSchema.optional() });
+export const marketplaceCancelRequestSchema = z.object({ operationId: z.string().trim().min(1) }).strict();
+export const marketplaceRetryMigrationsRequestSchema = z.object({}).strict();
+export type CapabilityConfigureRequest = z.infer<typeof capabilityConfigureRequestSchema>;
+export type CapabilityActivateRequest = z.infer<typeof capabilityActivateRequestSchema>;
+export type CapabilityDeactivateRequest = z.infer<typeof capabilityDeactivateRequestSchema>;

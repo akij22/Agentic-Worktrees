@@ -8,9 +8,30 @@ import { VitePlugin } from '@electron-forge/plugin-vite';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
 
+const packagedRuntimeModules = [
+  'better-sqlite3',
+  'bindings',
+  'file-uri-to-path',
+  'node-pty',
+  'node-addon-api',
+] as const;
+
+export const shouldIgnorePackagedPath = (filePath: string): boolean => {
+  if (!filePath) return false;
+  if (filePath === '/.vite' || filePath.startsWith('/.vite/')) return false;
+  if (filePath === '/node_modules') return false;
+  return !packagedRuntimeModules.some((moduleName) => {
+    const modulePath = `/node_modules/${moduleName}`;
+    return filePath === modulePath || filePath.startsWith(`${modulePath}/`);
+  });
+};
+
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
+    // The Vite plugin otherwise keeps only `.vite`. Native dependencies are
+    // externalized from the main bundle, so retain their runtime package trees.
+    ignore: shouldIgnorePackagedPath,
   },
   rebuildConfig: {},
   makers: [
@@ -29,6 +50,16 @@ const config: ForgeConfig = {
           // `entry` is just an alias for `build.lib.entry` in the corresponding file of `config`.
           entry: 'src/main.ts',
           config: 'vite.main.config.ts',
+          target: 'main',
+        },
+        {
+          entry: 'src/main/capabilities/host-entry.ts',
+          config: 'vite.capability-host.config.ts',
+          target: 'main',
+        },
+        {
+          entry: 'src/main/capabilities/package-verifier-entry.ts',
+          config: 'vite.capability-verifier.config.ts',
           target: 'main',
         },
         {
