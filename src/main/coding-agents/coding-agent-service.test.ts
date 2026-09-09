@@ -61,6 +61,7 @@ const mocks = vi.hoisted(() => {
       >(async () => []),
       sendPrompt: vi.fn(async () => undefined),
       configureSkills: vi.fn(async () => undefined),
+      reconfigureCapabilities: vi.fn(async () => undefined),
       compact: vi.fn(async () => undefined),
       getUsage: vi.fn<() => Promise<CodingAgentSessionUsage>>(async () => ({
         contextTokens: 50_000,
@@ -154,6 +155,7 @@ vi.mock("./primary-workspace-service", () => ({
 import {
   type AgentUiEvent,
   autoDiscoverAgent,
+  applyCodingAgentCapabilities,
   compactAgentSession,
   configureCodingAgentCapabilityBridge,
   configureCodingAgentSkillCatalog,
@@ -514,18 +516,120 @@ describe("coding-agent service routing", () => {
     expect(mocks.openCode.adapter.sendPrompt).not.toHaveBeenCalled();
   });
 
+  it("waits for capability reload before reading another chat on the shared provider", async () => {
+    seedSession("codex-run", "codex", "codex-thread");
+    seedSession("other-run", "codex", "other-thread");
+    let finishReload!: () => void;
+    let startedReload!: () => void;
+    const started = new Promise<void>((resolve) => {
+      startedReload = resolve;
+    });
+    mocks.codex.adapter.reconfigureCapabilities.mockImplementationOnce(
+      async () => {
+        startedReload();
+        await new Promise<void>((resolve) => {
+          finishReload = resolve;
+        });
+      },
+    );
+    const connection = {
+      serverName: "aw_codex_run",
+      profileId: "aw_codex_run",
+      url: "http://127.0.0.1:43123/mcp",
+      authorizationHeader: "Bearer test",
+    };
+    const reload = applyCodingAgentCapabilities("codex-run", connection, []);
+    await started;
+    const snapshot = getAgentSessionSnapshot("other-run");
+    await Promise.resolve();
+    expect(mocks.codex.adapter.getSession).not.toHaveBeenCalled();
+    finishReload();
+    await reload;
+    expect((await snapshot).session.status).toBe("idle");
+    expect(mocks.codex.adapter.getSession).toHaveBeenCalledWith(
+      process.cwd(),
+      "other-thread",
+    );
+  });
+
+  it("finishes in-flight snapshot reads before restarting the provider", async () => {
+    seedSession("codex-run", "codex", "codex-thread");
+    let finishRead!: () => void;
+    let startedRead!: () => void;
+    const started = new Promise<void>((resolve) => {
+      startedRead = resolve;
+    });
+    mocks.codex.adapter.getSession.mockImplementationOnce(async () => {
+      startedRead();
+      await new Promise<void>((resolve) => {
+        finishRead = resolve;
+      });
+      return { id: "codex-thread", status: "idle" };
+    });
+    const snapshot = getAgentSessionSnapshot("codex-run");
+    await started;
+    const connection = {
+      serverName: "aw_codex_run",
+      profileId: "aw_codex_run",
+      url: "http://127.0.0.1:43123/mcp",
+      authorizationHeader: "Bearer test",
+    };
+    const reload = applyCodingAgentCapabilities("codex-run", connection, []);
+    await Promise.resolve();
+    expect(mocks.codex.adapter.reconfigureCapabilities).not.toHaveBeenCalled();
+    finishRead();
+    await snapshot;
+    await reload;
+    expect(mocks.codex.adapter.reconfigureCapabilities).toHaveBeenCalledOnce();
+  });
+
+  it("releases waiting reads and preserves genuine capability reload errors", async () => {
+    seedSession("codex-run", "codex", "codex-thread");
+    mocks.codex.adapter.reconfigureCapabilities.mockRejectedValueOnce(
+      new Error("Reload failed"),
+    );
+    const connection = {
+      serverName: "aw_codex_run",
+      profileId: "aw_codex_run",
+      url: "http://127.0.0.1:43123/mcp",
+      authorizationHeader: "Bearer test",
+    };
+    const reload = applyCodingAgentCapabilities("codex-run", connection, []);
+    const snapshot = getAgentSessionSnapshot("codex-run");
+    await expect(reload).rejects.toThrow("Reload failed");
+    expect((await snapshot).session.status).toBe("idle");
+  });
+
   it("keeps the capability host absent after final deactivation and uses the default OpenCode profile", async () => {
     seedSession("opencode-run", "opencode", "opencode-session");
-    const connection = { serverName: "aw_opencode_run", profileId: "aw_opencode_run", url: "http://127.0.0.1:43123/mcp", authorizationHeader: "Bearer token" };
+    const connection = {
+      serverName: "aw_opencode_run",
+      profileId: "aw_opencode_run",
+      url: "http://127.0.0.1:43123/mcp",
+      authorizationHeader: "Bearer token",
+    };
     const connections = new Map<string, typeof connection>();
     let capabilityState = "active";
-    const prepareSession = vi.fn(async (runId: string) => { connections.set(runId, connection); return connection; });
-    const stopSession = vi.fn((runId: string) => { connections.delete(runId); });
+    const prepareSession = vi.fn(async (runId: string) => {
+      connections.set(runId, connection);
+      return connection;
+    });
+    const stopSession = vi.fn((runId: string) => {
+      connections.delete(runId);
+    });
     configureCodingAgentCapabilityBridge({
       prepareSession,
-      listConnections: (agentKind) => agentKind === "opencode" ? [...connections.values()] : [],
+      listConnections: (agentKind) =>
+        agentKind === "opencode" ? [...connections.values()] : [],
       stopSession,
-      listSessionCapabilities: () => [{ id: "agentic-worktrees.web-search", name: "Web Search", version: "0.1.0", state: capabilityState }],
+      listSessionCapabilities: () => [
+        {
+          id: "agentic-worktrees.web-search",
+          name: "Web Search",
+          version: "0.1.0",
+          state: capabilityState,
+        },
+      ],
       isReloading: () => false,
     });
 
@@ -544,7 +648,10 @@ describe("coding-agent service routing", () => {
     expect(prepareSession).not.toHaveBeenCalled();
     expect(stopSession).toHaveBeenCalledWith("opencode-run");
     expect(connections.has("opencode-run")).toBe(false);
-    expect(mocks.openCode.adapter.getSession).toHaveBeenLastCalledWith(process.cwd(), "opencode-session");
+    expect(mocks.openCode.adapter.getSession).toHaveBeenLastCalledWith(
+      process.cwd(),
+      "opencode-session",
+    );
     expect(mocks.openCode.adapter.sendPrompt).toHaveBeenCalledWith(
       process.cwd(),
       "opencode-session",
@@ -892,7 +999,31 @@ describe("coding-agent service routing", () => {
   });
 });
 
-describe("coding-agent skill bridge",()=>{
- it("configures both adapters process-wide",async()=>{await configureCodingAgentSkillCatalog({activeRoot:"/managed/active",expectedIds:["review"]});expect(mocks.codex.adapter.configureSkills).toHaveBeenCalled();expect(mocks.openCode.adapter.configureSkills).toHaveBeenCalled();});
- it("delivers a structured explicit turn",async()=>{seedSession("codex-run","codex","codex-thread");await sendAgentMessage("codex-run",{explicitSkill:{id:"review",name:"review",path:"/managed/review/SKILL.md",arguments:"Review auth"}});expect(mocks.codex.adapter.sendPrompt).toHaveBeenCalledWith(expect.any(String),expect.any(String),expect.objectContaining({explicitSkill:expect.objectContaining({id:"review"})}));});
+describe("coding-agent skill bridge", () => {
+  it("configures both adapters process-wide", async () => {
+    await configureCodingAgentSkillCatalog({
+      activeRoot: "/managed/active",
+      expectedIds: ["review"],
+    });
+    expect(mocks.codex.adapter.configureSkills).toHaveBeenCalled();
+    expect(mocks.openCode.adapter.configureSkills).toHaveBeenCalled();
+  });
+  it("delivers a structured explicit turn", async () => {
+    seedSession("codex-run", "codex", "codex-thread");
+    await sendAgentMessage("codex-run", {
+      explicitSkill: {
+        id: "review",
+        name: "review",
+        path: "/managed/review/SKILL.md",
+        arguments: "Review auth",
+      },
+    });
+    expect(mocks.codex.adapter.sendPrompt).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      expect.objectContaining({
+        explicitSkill: expect.objectContaining({ id: "review" }),
+      }),
+    );
+  });
 });
