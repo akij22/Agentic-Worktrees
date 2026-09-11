@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Whose call was it? — throwaway #63</title>
+<style>body{max-width:1040px;margin:40px auto;padding:0 24px;background:#f6f4ed;color:#252b28;font:16px Georgia,serif}h1{font-size:44px;margin-bottom:10px}h2{font-size:22px}small,button,th{font-family:monospace}button{padding:10px;margin:4px;border:1px solid #758078;background:transparent;color:inherit;cursor:pointer}button:hover,button[aria-selected=true]{background:#dce9df}button:focus-visible{outline:3px solid #14754a}button:disabled{opacity:.45;cursor:default}section{border-top:1px solid #a8b3a9;padding:18px 0}table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:9px;border-bottom:1px solid #d0d4cb}#notice{border-left:4px solid #14754a;padding:12px}#tabs{display:flex;flex-wrap:wrap}.muted{color:#58635b}</style>
+<small>THROWAWAY / ISSUE 63 / NO PROVIDER CONNECTED</small><h1>Whose call was it?</h1><p>Can two sessions share one worktree runtime while a validated Capability call is attributed to exactly one application run? Explore authorization ownership, execution evidence, and what remains unknowable.</p><p class="muted">This is a logic model, not live-provider proof. A run-bound credential proves its lease owner only if another session cannot use that credential and route. Open the adjacent report before treating this as an implementation decision.</p>
+<section aria-live="polite"><h2>Current evidence</h2><p id="scope"></p><p id="notice"></p><table><thead><tr><th>Invocation</th><th>Lease owner</th><th>Generation</th><th>Host boundary / outcome</th><th>Provider pairing</th></tr></thead><tbody id="rows"></tbody></table><p id="empty"></p><details><summary>Full relevant model state</summary><pre id="raw"></pre></details></section>
+<section><h2>Free play</h2><div id="actions"></div></section><section><h2>Guided walkthroughs</h2><div id="tabs" role="tablist" aria-label="Scenarios"></div><p id="description"></p><div id="steps"></div></section>
+<script>
+// Portable pure model. Tokens are symbolic: this HTML never creates real credentials.
+const initial = () => ({generation:1,next:1,entries:[],notice:'A and B share worktree W. Each owns a separate run lease. No calls entered.',rejections:0});
+function reduce(state, action){
+ const s=structuredClone(state); const enter=(run,outcome='entered')=>s.entries.push({id:'host-'+s.next++,run,generation:s.generation,outcome,pairing:'unknown'});
+ switch(action){
+ case 'A': enter('A');s.notice='Validated dispatch: A lease. E2 conditional on exclusive credential delivery.';break;
+ case 'B': enter('B');s.notice='Validated dispatch: B lease. Worktree identity played no role.';break;
+ case 'concurrent':enter('A');enter('A');enter('B');s.notice='Same tool and JSON-RPC ID can coexist. Host IDs remain distinct; provider-call pairing unknown.';break;
+ case 'reject':s.rejections++;s.notice='Invalid arguments rejected before entry: no E2.';break;
+ case 'wrong':s.rejections++;s.notice='A credential at B route rejected. A profile name alone authorizes nothing.';break;
+ case 'stolen':enter('A');s.notice='B used BOTH A credential and A route. Host sees A lease, not B. Exclusive-delivery assumption broken: originating run is UNPROVEN.';s.entries.at(-1).run='A lease / actual caller unknown';break;
+ case 'fail':enter('A','failed after entry');s.notice='Failure does not erase E2.';break;
+ case 'timeout':enter('B','deadline after entry');s.notice='Used remains confirmed; deadline does not prove underlying work stopped.';break;
+ case 'cancel':enter('A','client cancelled; host outcome unknown');s.notice='Cancellation is separate from entry. A disconnect is not proof of host abort.';break;
+ case 'retry':enter('A');s.notice='Retry receives a NEW host invocation; never merge by arguments or tool name.';break;
+ case 'restart':s.generation++;s.notice='Replacement generation activated. Old leases must be revoked before new admission.';break;
+ case 'stale':s.rejections++;s.notice='Old lease/event quarantined. Historical entries remain historical; no mutation of current run.';break;
+ case 'event':s.notice='Structured provider event proves requested server/tool and session, not entry. No common trusted invocation key: do not pair concurrent calls by timing.';break;
+ case 'reset':return initial();
+ }return s;
+}
+const labels={A:'Call from A',B:'Call from B',concurrent:'Three same-tool calls',reject:'Reject invalid input',wrong:'Use wrong credential',stolen:'Steal matching route + credential',fail:'Fail after entry',timeout:'Reach host deadline',cancel:'Cancel client',retry:'Retry call',restart:'Replace runtime',stale:'Replay old lease / event',event:'Receive provider event',reset:'Reset'};
+const scenarios=[['Shared runtime','One worktree, two sessions. Watch distinct entries, not titles or timing.',['concurrent','event']],['Validation & failure','Only crossing the handler boundary establishes E2.',['reject','fail','retry']],['Cancellation','Client intent and actual host outcome are different facts.',['cancel','timeout','retry']],['Replacement','Old evidence cannot mutate a replacement runtime.',['A','restart','stale']],['Cross-session attack','Wrong credential is denied; stolen matching credential is the decisive counterexample.',['wrong','stolen']]];
+let state=initial(), selected=0,step=0;
+function button(label,fn){const b=document.createElement('button');b.textContent=label;b.onclick=fn;return b;}
+function render(){document.getElementById('scope').textContent=`Worktree W · runtime generation ${state.generation} · runs A / B · rejected: ${state.rejections}`;document.getElementById('notice').textContent=state.notice;document.getElementById('empty').textContent=state.entries.length?'':'No execution evidence yet.';const rows=document.getElementById('rows');rows.replaceChildren();for(const e of state.entries){const tr=document.createElement('tr');for(const value of [e.id,e.run,e.generation,e.outcome,e.pairing]){const td=document.createElement('td');td.textContent=value;tr.append(td)}rows.append(tr)}document.getElementById('raw').textContent=JSON.stringify(state,null,2);const tabs=document.getElementById('tabs');tabs.replaceChildren();scenarios.forEach(([name],i)=>{const b=button(name,()=>{selected=i;step=0;state=initial();render()});b.setAttribute('role','tab');b.setAttribute('aria-selected',String(i===selected));tabs.append(b)});document.getElementById('description').textContent=scenarios[selected][1];const steps=document.getElementById('steps');steps.replaceChildren();scenarios[selected][2].forEach((a,i)=>{const b=button(`${i+1}. ${labels[a]}`,()=>{state=reduce(state,a);step++;render()});b.disabled=i!==step;steps.append(b)});}
+for(const [action,label] of Object.entries(labels))document.getElementById('actions').append(button(label,()=>{state=reduce(state,action);render()}));render();
+</script></html>
