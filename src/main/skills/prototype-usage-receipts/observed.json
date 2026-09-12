@@ -1,0 +1,151 @@
+{
+  "kind": "sanitized-prototype-observations",
+  "containsSecretsPromptsBodiesOrPaths": false,
+  "versions": {
+    "codex": "codex-cli 0.154.0",
+    "opencode": "1.18.30"
+  },
+  "privateNamespaceWithoutExistingAuth": {
+    "codex": {
+      "catalogExact": true,
+      "explicit": {
+        "submitted": true,
+        "completed": true,
+        "recordedNativeRequest": true,
+        "publicLoadReceipt": false
+      },
+      "automatic": {
+        "submitted": true,
+        "completed": true,
+        "recordedNativeRequest": false,
+        "publicLoadReceipt": false
+      },
+      "missingFile": {
+        "submitted": true,
+        "recordedNativeRequest": true,
+        "publicLoadReceipt": false
+      },
+      "rolloutExactContextInjections": {
+        "unmapped": 0,
+        "explicit": 1,
+        "automatic": 0,
+        "missing-file": 0
+      },
+      "restartHistoryReadable": true,
+      "restartRolloutExactContextInjections": 1
+    },
+    "opencode": {
+      "catalogExact": true,
+      "commandResolution": {
+        "source": "skill",
+        "templateMatches": true
+      },
+      "selectedProvider": {
+        "providerID": "opencode",
+        "modelID": "big-pickle"
+      },
+      "explicitCommand": {
+        "submitted": true,
+        "builtinLoads": 1,
+        "injectedBody": true,
+        "assistantErrors": 0
+      },
+      "modelSelected": {
+        "submitted": true,
+        "builtinLoads": 1,
+        "injectedBody": false,
+        "assistantErrors": 0
+      },
+      "missingCommand": {
+        "submitted": false,
+        "boundary": "http-500"
+      },
+      "shadowing": {
+        "source": "command",
+        "shadowTemplate": true,
+        "assignedBodyResolved": false,
+        "submitted": true,
+        "assignedBodyInHistory": false
+      },
+      "restartHistory": {
+        "sessionCount": 3,
+        "readable": true,
+        "sessionsWithAssignedBody": 1,
+        "sessionsWithBuiltinLoads": 2
+      }
+    }
+  },
+  "privateNamespaceWithExistingCliAuth": {
+    "codex": {
+      "catalogExact": true,
+      "explicit": {
+        "submitted": true,
+        "completed": true,
+        "recordedNativeRequest": true,
+        "publicLoadReceipt": false
+      },
+      "automatic": {
+        "submitted": true,
+        "completed": true,
+        "recordedNativeRequest": false,
+        "publicLoadReceipt": false
+      },
+      "missingFile": {
+        "submitted": true,
+        "recordedNativeRequest": true,
+        "publicLoadReceipt": false
+      },
+      "rolloutExactContextInjections": {
+        "explicit": 1,
+        "automatic": 0,
+        "missing-file": 0
+      },
+      "restartHistoryReadable": true,
+      "restartRolloutExactContextInjections": null
+    },
+    "opencode": {
+      "catalogExact": true,
+      "commandResolution": {
+        "source": "skill",
+        "templateMatches": true
+      },
+      "selectedProvider": {
+        "providerID": "openai",
+        "modelID": "gpt-5.4"
+      },
+      "explicitCommand": {
+        "submitted": true,
+        "builtinLoads": 0,
+        "injectedBody": true,
+        "assistantErrors": 1
+      },
+      "modelSelected": {
+        "submitted": true,
+        "builtinLoads": 0,
+        "injectedBody": false,
+        "assistantErrors": 1
+      },
+      "missingCommand": {
+        "submitted": false,
+        "boundary": "http-500"
+      },
+      "shadowing": {
+        "source": "command",
+        "shadowTemplate": true,
+        "assignedBodyResolved": false,
+        "submitted": true,
+        "assignedBodyInHistory": false
+      },
+      "restartHistory": {
+        "sessionCount": 3,
+        "readable": true,
+        "sessionsWithAssignedBody": 1
+      }
+    }
+  },
+  "notes": [
+    "OpenCode used its available provider in each run; provider/model outcomes do not determine whether local Skill context injection occurred.",
+    "The final no-existing-auth run replayed one explicit command injection and two completed builtin Skill loads after restart.",
+    "The existing-auth run predates the final replay counters but was retained only as a sanitized reviewed observation."
+  ]
+}

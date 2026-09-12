@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skill receipts · throwaway evidence lab</title>
+<style>
+:root{color-scheme:light;--ink:#242820;--muted:#616659;--accent:#27664b;--paper:#f6f5ee}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px Georgia,serif}main{max-width:1080px;margin:auto;padding:38px 28px}small,.eyebrow,button,dt,label,summary{font-family:Verdana,sans-serif}.eyebrow{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}h1{font-weight:normal;font-size:44px;margin:14px 0}h2{font-weight:normal;font-size:25px}p{line-height:1.55;max-width:85ch}.note{border-left:3px solid var(--accent);padding-left:18px;color:var(--muted)}section{border-top:1px solid #c8cbbc;margin-top:26px;padding-top:16px}dl{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin:22px 0}dt{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}dd{margin:7px 0;font-size:20px;overflow-wrap:anywhere}button{border:1px solid #aeb8a9;background:transparent;color:var(--ink);padding:11px 14px;margin:4px 4px 4px 0;cursor:pointer;font-size:12px;border-radius:3px}button:hover,button[aria-selected=true]{background:#dfe8dc}button:focus-visible,textarea:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:3px}button:disabled{opacity:.5;cursor:default}#steps button{display:block;text-align:left}pre,textarea{font:12px/1.5 Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;width:100%}textarea{padding:12px;background:white;border:1px solid #aeb8a9;height:180px}pre{background:#eeeee5;padding:16px}#notice{color:var(--accent);min-height:24px}#attempts{padding-left:20px;line-height:1.7}footer{font-size:12px;color:var(--muted);margin-top:34px}@media(max-width:650px){dl{grid-template-columns:1fr 1fr}h1{font-size:34px}main{padding:24px 18px}}
+</style>
+<main><div class="eyebrow">Issue #64 / disposable backend logic / not application UI</div>
+<h1>Requested is not loaded.</h1>
+<p>Which version-pinned provider paths prove that an assigned Skill body entered one application session’s model context? Explore receipts, failure boundaries and history without mistaking a successful bridge call for Skill use.</p>
+<p class="note">This is a <strong>fixture laboratory</strong>, not a live monitor. All buttons send invented, explicitly labelled evidence to the same pure reducer. Real observations and remaining gates are in REPORT.md and observed.json. “Used” means loaded into provider context—not obeyed, completed, or successfully sent to a remote model.</p>
+<section aria-labelledby="state-title"><h2 id="state-title">Current evidence</h2><div id="state" aria-live="polite"></div><ul id="attempts"></ul><p id="notice" role="status"></p></section>
+<section><h2>Free play</h2><p>Try actions in any order. The assigned Skill and session are fixed; another session’s receipt cannot count here.</p><div id="actions"></div><button id="reset">Reset all evidence</button></section>
+<section><h2>Guided walkthroughs</h2><div id="tabs" role="tablist" aria-label="Evidence scenarios"></div><div id="walkthrough" role="tabpanel"><h3 id="scenario-title"></h3><p id="description"></p><div id="steps"></div></div></section>
+<section><details><summary>Evidence envelope and full state</summary><p>Only a trusted backend normalizer can vouch for registry ownership, exact identity and context boundaries. Editing this local fixture does not create real evidence.</p><label for="envelope">Fixture evidence envelope (JSON)</label><textarea id="envelope" spellcheck="false"></textarea><button id="apply">Apply envelope</button><pre id="raw"></pre></details></section>
+<footer>No network, dependencies, storage, production imports or persistence. Double-click this file. Canonical identity uses opaque fixture references; no private paths or instruction bodies are displayed.</footer></main>
+<script id="receipt-model">
+// THROWAWAY pure module. Normalized evidence is trusted only after a version-specific backend verifier.
+const ReceiptModel = (() => {
+  const assignment = { appSession: 'session-A', externalSession: 'provider-session-A', runtime: 'runtime-1', skill: 'assigned-skill', digest: 'sha256:fixture-v1', catalog: 'catalog-1' };
+  const pins = { codex: '0.154.0', opencode: '1.18.30' };
+  const initial = () => ({ events: [], rejected: 0, duplicates: 0, coverage: 'live only' });
+  const exact = e => Object.entries(assignment).every(([k,v]) => e[k] === v);
+  const verified = e => e.verified === true && pins[e.provider] === e.providerVersion && e.compatibility === 'verified';
+  function positive(e) {
+    if (!verified(e) || !exact(e) || !e.fullBody || !e.identityAtInvocation) return false;
+    if (e.provider === 'codex') return e.boundary === 'codex.context-injection' && e.contextKind === 'skills.selected_skill_instructions' && e.nativeRecord === true;
+    if (e.boundary === 'opencode.builtin-result') return e.tool === 'skill' && e.registryOwner === 'builtin' && e.status === 'completed' && e.metadataExact === true;
+    return e.boundary === 'opencode.command-injection' && e.commandSource === 'skill' && e.resolutionExact === true && e.messageCorrelated === true && e.status === 'injected';
+  }
+  const modeOf = e => e.modeProof === 'native-skill-input' || e.modeProof === 'verified-session-command' || e.modeProof === 'controlled-explicit-tool-request' ? 'explicit' : e.modeProof === 'controlled-model-selection' ? 'automatic' : 'unknown';
+  function reduce(state, e) {
+    if (!e || typeof e !== 'object' || typeof e.receipt !== 'string' || !e.receipt || typeof e.attempt !== 'string' || !e.attempt || !['fixture','observed'].includes(e.origin) || !exact(e)) return { ...state, rejected: state.rejected + 1 };
+    const key = [e.provider,e.providerVersion,e.runtime,e.externalSession,e.attempt,e.receipt,e.boundary].join('|');
+    const existing = state.events.find(x => x.key === key);
+    if (existing) {
+      // A conflicting replay is not a duplicate and must not silently replace provenance.
+      const stripTransport = x => Object.fromEntries(Object.entries(x).filter(([k]) => !['transport','key'].includes(k)));
+      return JSON.stringify(stripTransport(existing)) === JSON.stringify(stripTransport(e)) ? { ...state, duplicates: state.duplicates + 1, coverage: e.transport === 'history' ? 'live + history (not exhaustive)' : state.coverage } : { ...state, rejected: state.rejected + 1 };
+    }
+    return { ...state, events: [...state.events, { ...e, key }], coverage: e.transport === 'history' ? 'history available (not exhaustive)' : state.coverage };
+  }
+  function view(state) {
+    const attempts = [...new Set(state.events.map(e => e.attempt))].map(id => {
+      const events = state.events.filter(e => e.attempt === id);
+      const loads = events.filter(positive);
+      const modes = [...new Set(loads.map(modeOf))];
+      const failed = events.some(e => verified(e) && e.boundary === 'load-failed');
+      const requested = events.some(e => e.boundary === 'requested');
+      return { id, status: loads.length ? 'loaded' : failed ? 'failed' : requested ? 'requested' : 'unknown', used: loads.length ? 'confirmed' : 'unknown', mode: modes.length === 1 ? modes[0] : 'unknown', confidence: loads.length ? 'E2 · exact context evidence' : failed ? 'load failure only' : requested ? 'E1 · request only' : 'insufficient evidence', taskFailed: events.some(e => verified(e) && e.boundary === 'task-failed'), origins: [...new Set(events.map(e => e.origin))] };
+    });
+    const loaded = attempts.filter(a => a.status === 'loaded');
+    return { assignment, status: loaded.length ? 'loaded' : attempts.some(a => a.status === 'failed') ? 'failed' : attempts.some(a => a.status === 'requested') ? 'requested' : 'unknown', used: loaded.length ? 'confirmed' : 'unknown / not confirmed', attempts, receipts: state.events.length, duplicates: state.duplicates, rejected: state.rejected, coverage: state.coverage };
+  }
+  const base = { ...assignment, provider: 'opencode', providerVersion: '1.18.30', compatibility: 'verified', verified: true, origin: 'fixture', attempt: 'attempt-1', transport: 'live', identityAtInvocation: true };
+  const event = (receipt, boundary, extra = {}) => ({ ...base, receipt, boundary, ...extra });
+  const actions = {
+    request: ['Ask for assigned Skill', event('request','requested',{ modeProof: 'verified-session-command' })],
+    bridge: ['Bridge finishes successfully', event('bridge','bridge-completed')],
+    builtin: ['Builtin loader returns full body', event('builtin','opencode.builtin-result',{ tool:'skill',registryOwner:'builtin',status:'completed',metadataExact:true,fullBody:true,modeProof:'controlled-model-selection' })],
+    command: ['Verified Skill command injects body', event('command','opencode.command-injection',{ commandSource:'skill',resolutionExact:true,messageCorrelated:true,status:'injected',fullBody:true,modeProof:'verified-session-command' })],
+    codex: ['Codex private context record arrives', event('context','codex.context-injection',{ provider:'codex',providerVersion:'0.154.0',contextKind:'skills.selected_skill_instructions',nativeRecord:true,fullBody:true,modeProof:'native-skill-input' })],
+    fail: ['Loading fails before body entry', event('failure','load-failed')],
+    taskFail: ['Later task fails', event('task','task-failed')],
+    missing: ['Turn ends without a receipt', event('missing','coverage-gap')],
+    replay: ['Replay the builtin receipt', event('builtin','opencode.builtin-result',{ tool:'skill',registryOwner:'builtin',status:'completed',metadataExact:true,fullBody:true,modeProof:'controlled-model-selection',transport:'history' })],
+    shadow: ['Same command name resolves elsewhere', event('shadow','opencode.command-injection',{commandSource:'command',resolutionExact:false,messageCorrelated:true,status:'injected',fullBody:false,modeProof:'verified-session-command'})],
+    mismatch: ['Unverified SDK / CLI contract', event('mismatch','opencode.builtin-result',{tool:'skill',registryOwner:'builtin',status:'completed',metadataExact:true,fullBody:true,compatibility:'unverified-sdk-1.17.18'})],
+    unknownMode: ['Load proven; invocation path unknown', event('unknown-mode','opencode.builtin-result',{tool:'skill',registryOwner:'builtin',status:'completed',metadataExact:true,fullBody:true})],
+    otherSession: ['Receipt belongs to another session', event('foreign','opencode.builtin-result',{externalSession:'provider-session-B',tool:'skill',registryOwner:'builtin',status:'completed',metadataExact:true,fullBody:true})],
+    partial: ['Body was truncated', event('partial','opencode.builtin-result',{tool:'skill',registryOwner:'builtin',status:'completed',metadataExact:true,fullBody:false})],
+    spoof: ['Look-alike tool claims it loaded', event('spoof','opencode.builtin-result',{tool:'skill',registryOwner:'plugin',status:'completed',metadataExact:true,fullBody:true})],
+    retry: ['A new attempt really loads', event('builtin','opencode.builtin-result',{attempt:'attempt-2',tool:'skill',registryOwner:'builtin',status:'completed',metadataExact:true,fullBody:true,modeProof:'controlled-explicit-tool-request'})]
+  };
+  const scenarios = [
+    {title:'Request ≠ use',description:'A native request and a completed bridge still leave loading unknown.',steps:['request','bridge','missing'],expect:{status:'requested',used:'unknown / not confirmed'}},
+    {title:'Automatic load',description:'A controlled model-selected builtin result confirms use, even when the later task fails.',steps:['builtin','taskFail'],expect:{status:'loaded',mode:'automatic'}},
+    {title:'Explicit command',description:'Verified command source, body and correlated injection—not the command name—establish explicit use.',steps:['request','command'],expect:{status:'loaded',mode:'explicit'}},
+    {title:'Codex context',description:'Pinned private rollout context injection is stronger than the public native-input item. This button is a normalized fixture for that observed boundary.',steps:['request','codex'],expect:{status:'loaded',mode:'explicit'}},
+    {title:'Failed load',description:'A failed load never becomes Used merely because submission succeeded.',steps:['request','fail','bridge'],expect:{status:'failed',used:'unknown / not confirmed'}},
+    {title:'Replay & restart',description:'A history-only receipt recovers loading after restart; receiving the same receipt live adds no second use.',steps:['replay','builtin','replay'],expect:{status:'loaded',duplicates:2}},
+    {title:'Command shadow',description:'Another command wins the name. Its successful execution does not load the assigned Skill.',steps:['request','shadow','bridge'],expect:{status:'requested',used:'unknown / not confirmed'}},
+    {title:'SDK mismatch',description:'Different SDK and CLI versions require a verified boundary, not optimistic casting.',steps:['request','mismatch'],expect:{status:'requested'}},
+    {title:'Unknown mode',description:'Positive loading can coexist with unknown invocation mode. No explicit app request does not prove automatic.',steps:['unknownMode'],expect:{status:'loaded',mode:'unknown'}},
+    {title:'Wrong session',description:'Exact Skill identity alone cannot attribute another session’s evidence here.',steps:['otherSession'],expect:{status:'unknown',rejected:1}},
+    {title:'Incomplete / spoofed',description:'A truncated body or a plugin masquerading as the builtin fails the positive-evidence gate.',steps:['request','partial','spoof'],expect:{status:'requested'}},
+    {title:'Retry',description:'A new successful attempt does not erase the first attempt’s failed load.',steps:['request','fail','retry','taskFail'],expect:{status:'loaded',attemptCount:2}}
+  ];
+  return { initial, reduce, view, actions, scenarios, positive };
+})();
+</script>
+<script>
+let state=ReceiptModel.initial(),selected=0,step=0;
+const $=id=>document.getElementById(id);
+function render(){const v=ReceiptModel.view(state);$('state').replaceChildren();const dl=document.createElement('dl');for(const [label,value] of Object.entries({State:v.status,'Skill Used':v.used,'Accepted receipts':v.receipts,'Replayed duplicates':v.duplicates,'Rejected evidence':v.rejected,Coverage:v.coverage})){const box=document.createElement('div'),dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=label;dd.textContent=value;box.append(dt,dd);dl.append(box)}$('state').append(dl);$('attempts').replaceChildren();for(const a of v.attempts){const li=document.createElement('li');li.textContent=`${a.id}: ${a.status}; mode ${a.mode}; ${a.confidence}; task ${a.taskFailed?'failed':'outcome not known'}; ${a.origins.join(', ')} evidence`;$('attempts').append(li)}$('raw').textContent=JSON.stringify({view:v,evidence:state.events},null,2)}
+function dispatch(key){const [label,e]=ReceiptModel.actions[key];state=ReceiptModel.reduce(state,e);$('envelope').value=JSON.stringify(e,null,2);$('notice').textContent=label+' · fixture applied';render()}
+for(const [key,[label]] of Object.entries(ReceiptModel.actions)){const b=document.createElement('button');b.textContent=label;b.onclick=()=>dispatch(key);$('actions').append(b)}
+function walkthrough(index){selected=index;step=0;state=ReceiptModel.initial();$('notice').textContent='Walkthrough reset to no evidence.';const s=ReceiptModel.scenarios[index];$('scenario-title').textContent=s.title;$('description').textContent=s.description;drawSteps();render();[...$('tabs').children].forEach((b,i)=>{b.setAttribute('aria-selected',String(i===index));b.tabIndex=i===index?0:-1})}
+function drawSteps(){const s=ReceiptModel.scenarios[selected];$('steps').replaceChildren();s.steps.forEach((key,i)=>{const b=document.createElement('button');b.textContent=`${i<step?'✓':i+1}. ${ReceiptModel.actions[key][0]}`;b.disabled=i!==step;b.onclick=()=>{dispatch(key);step++;drawSteps();const next=$('steps').children[step];if(next)next.focus();else $('notice').textContent+=' · walkthrough complete'};$('steps').append(b)})}
+ReceiptModel.scenarios.forEach((s,i)=>{const b=document.createElement('button');b.textContent=s.title;b.setAttribute('role','tab');b.setAttribute('aria-controls','walkthrough');b.onclick=()=>walkthrough(i);b.onkeydown=e=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();const n=ReceiptModel.scenarios.length;const target=e.key==='Home'?0:e.key==='End'?n-1:(i+(e.key==='ArrowRight'?1:-1)+n)%n;walkthrough(target);$('tabs').children[target].focus()}};$('tabs').append(b)});
+$('reset').onclick=()=>walkthrough(selected);$('apply').onclick=()=>{try{state=ReceiptModel.reduce(state,JSON.parse($('envelope').value));$('notice').textContent='Envelope processed; see accepted/rejected evidence.';render()}catch{$('notice').textContent='Enter a valid JSON evidence envelope.'}};
+$('envelope').value=JSON.stringify(ReceiptModel.actions.builtin[1],null,2);walkthrough(0);
+</script></html>
